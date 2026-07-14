@@ -1,5 +1,6 @@
 # 使用 miniconda 镜像: lanelet2 在 conda-forge 上维护最好
-FROM continuumio/miniconda3:25.3.1-0
+# 用 latest 避免具体 tag 拉不到的问题
+FROM continuumio/miniconda3:latest
 
 LABEL maintainer="lanelet-editor"
 
@@ -10,15 +11,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
+# 配置 conda 国内源(加速 lanelet2 安装)
+RUN conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/ \
+    && conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free/ \
+    && conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge/ \
+    && conda config --set show_channel_urls yes
+
 WORKDIR /app
 
 # 用 conda 安装 lanelet2(避免 pip 编译失败)
-# 同时安装其他 Python 依赖
 RUN conda install -y -c conda-forge \
     python=3.11 \
-    lanelet2=1.2.1 \
+    lanelet2 \
     numpy \
     && conda clean -afy
+
+# 配置 pip 国内源
+RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 复制依赖并安装
 COPY requirements.txt .
