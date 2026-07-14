@@ -1,7 +1,12 @@
 <template>
   <div class="map-container">
     <!-- Potree 渲染区 -->
-    <div ref="potreeContainer" class="potree-view"></div>
+    <div ref="potreeContainer" class="potree-view">
+      <div v-if="initError" class="init-error">
+        <p>{{ initError }}</p>
+        <p style="font-size:11px;margin-top:4px">请按 F12 查看 Console 获取详细信息</p>
+      </div>
+    </div>
 
     <!-- 左侧工具栏 -->
     <aside class="sidebar">
@@ -60,9 +65,9 @@ import {
   type PointCloudItem,
 } from '../api'
 
-// Potree 通过 script 标签全局加载(不在 npm 中)
-// 通过 window.Potree 访问
-const Potree = window.Potree
+// Potree 通过 script 标签全局加载,运行时通过 window.Potree 动态获取
+// 不在 setup 顶层缓存,避免模块加载时序问题
+const getPotree = () => (window as any).Potree
 
 const potreeContainer = ref<HTMLDivElement>()
 const activeTab = ref('pointcloud')
@@ -70,63 +75,78 @@ const pointclouds = ref<PointCloudItem[]>([])
 const loading = ref(false)
 const currentPointcloud = ref('')
 const mousePos = ref<{ x: number; y: number; z: number } | null>(null)
+const initError = ref('')
 
 let viewer: any = null
 
 // 初始化 Potree
 function initPotree() {
-  if (!potreeContainer.value) return
-  if (!Potree) {
-    ElMessage.error('Potree 库未加载,请检查 /potree/potree.js 是否存在')
+  initError.value = ''
+  if (!potreeContainer.value) {
+    initError.value = '容器未就绪'
     return
   }
 
-  viewer = new Potree.Viewer(potreeContainer.value)
+  const Potree = getPotree()
+  if (!Potree) {
+    initError.value = 'Potree 库未加载(检查 /potree/potree.js 是否 200 且非空)'
+    ElMessage.error(initError.value)
+    return
+  }
+  if (typeof Potree.Viewer !== 'function') {
+    initError.value = 'Potree.Viewer 不是函数,可能 jQuery 未加载'
+    ElMessage.error(initError.value)
+    return
+  }
 
-  // Potree 样式
-  viewer.setEDLEnabled(true)
-  viewer.setEDLRadius(1.0)
-  viewer.setEDLStrength(0.4)
-  viewer.setPointBudget(2_000_000)
-  viewer.setBackground('gradient')
+  try {
+    viewer = new Potree.Viewer(potreeContainer.value)
 
-  // 加载 Potree GUI(左侧工具栏)
-  viewer.loadGUI()
+    // Potree 样式
+    viewer.setEDLEnabled(true)
+    viewer.setEDLRadius(1.0)
+    viewer.setEDLStrength(0.4)
+    viewer.setPointBudget(2_000_000)
+    viewer.setBackground('gradient')
 
-  // 鼠标移动时拾取坐标(供后续画线使用)
-  setupMousePicking()
-}
+    // 加载 Potree GUI
+    viewer.loadGUI((() => {
+      // GUI 加载后默认折叠,给我们的侧栏留空间
+      const toggle = document.querySelector('#potree_sidebar_container')
+      if (toggle) (toggle as HTMLElement).style.display = 'none'
+    }))
 
-// 拾取点云坐标
-function setupMousePicking() {
-  if (!viewer) return
-  const dom = viewer.renderer?.domElement || potreeContainer.value
-  if (!dom) return
-
-  // 鼠标移动时显示当前坐标(第 2 轮实现真正的拾取)
-  dom.addEventListener('mousemove', () => {
-    if (!viewer) return
-    // TODO: 第 2 轮实现真正的点云拾取
-  })
+    console.log('[Lanelet Editor] Potree Viewer 初始化成功')
+  } catch (err) {
+    initError.value = 'Potree 初始化异常: ' + (err as Error).message
+    ElMessage.error(initError.value)
+    console.error('[Lanelet Editor] Potree init error:', err)
+  }
 }
 
 // 加载点云
 async function loadPointcloud(pc: PointCloudItem) {
-  if (!viewer) return
+  const Potree = getPotree()
+  if (!viewer || !Potree) {
+    ElMessage.error('Potree 未初始化: ' + (initError.value || '未知原因'))
+    return
+  }
   try {
-    // Potree 标准 API
+    console.log('[Lanelet Editor] 加载点云:', pc.url)
     Potree.loadPointCloud(pc.url, pc.name, (e: any) => {
       if (!e) {
-        ElMessage.error('点云加载失败')
+        ElMessage.error('点云加载失败(回调返回空)')
         return
       }
       viewer.scene.addPointCloud(e.pointcloud)
       viewer.fitToScreen()
       currentPointcloud.value = pc.name
       ElMessage.success(`已加载 ${pc.name}`)
+      console.log('[Lanelet Editor] 点云已加载:', e.pointcloud)
     })
   } catch (err) {
     ElMessage.error('加载失败: ' + (err as Error).message)
+    console.error('[Lanelet Editor] loadPointCloud error:', err)
   }
 }
 
@@ -204,6 +224,21 @@ onBeforeUnmount(() => {
   color: #909399;
   font-size: 12px;
   padding: 8px 0;
+}
+
+.init-error {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(245, 108, 108, 0.9);
+  color: #fff;
+  padding: 12px 20px;
+  border-radius: 6px;
+  font-size: 13px;
+  text-align: center;
+  z-index: 10;
+  max-width: 400px;
 }
 
 .status-panel {
