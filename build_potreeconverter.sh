@@ -7,12 +7,30 @@ INSTALL_DIR=/opt/potreeconverter
 SRC_DIR=/tmp/PotreeConverter-src
 
 echo "[1/4] 安装编译依赖..."
-dnf update -qq
-dnf install -y -qq \
-    build-essential cmake git \
-    libtbb-dev libboost-all-dev \
-    liblas-dev libgdal-dev \
-    zlib1g-dev liblzma-dev
+# 判断用 dnf 还是 yum
+PKG_MGR="yum"
+if command -v dnf &>/dev/null; then
+    PKG_MGR="dnf"
+fi
+
+# 启用 PowerTools/CRB 仓库(boost/las 等开发包需要)
+if [ "$PKG_MGR" = "dnf" ]; then
+    # RHEL 9 / CentOS Stream 9 / Rocky 9 / Alma 9
+    dnf install -y -q 'dnf-command(config-manager)' || true
+    dnf config-manager --set-enabled crb 2>/dev/null || true
+    dnf install -y -q epel-release || true
+else
+    # RHEL 8 / CentOS 8
+    dnf install -y -q 'dnf-command(config-manager)' || true
+    dnf config-manager --set-enabled powertools 2>/dev/null || true
+    dnf install -y -q epel-release || true
+fi
+
+$PKG_MGR install -y -q \
+    gcc gcc-c++ cmake git make \
+    tbb-devel boost-devel boost-system boost-thread \
+    LASlib-devel libgeotiff-devel \
+    zlib-devel xz-devel
 
 echo "[2/4] 克隆 PotreeConverter 源码..."
 rm -rf "$SRC_DIR"
@@ -31,7 +49,6 @@ make -j"$(nproc)"
 echo "[4/4] 安装到 $INSTALL_DIR..."
 mkdir -p "$INSTALL_DIR"
 cp PotreeConverter "$INSTALL_DIR/"
-cp -r ../libs/pdal/PDAL/* "$INSTALL_DIR/" 2>/dev/null || true
 
 # 验证
 echo ""
