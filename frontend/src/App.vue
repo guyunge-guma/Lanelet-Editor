@@ -18,9 +18,9 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import MapView from './views/MapView.vue'
-import { getHealth } from './api'
+import { getHealth, type HealthInfo } from './api'
 
-const health = ref<Awaited<ReturnType<typeof getHealth>>>(null)
+const health = ref<HealthInfo | null>(null)
 
 async function refreshHealth() {
   try {

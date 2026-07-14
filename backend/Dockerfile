@@ -1,8 +1,11 @@
 # 使用 miniconda 镜像: lanelet2 在 conda-forge 上维护最好
-# 用 latest 避免具体 tag 拉不到的问题
 FROM continuumio/miniconda3:latest
 
 LABEL maintainer="lanelet-editor"
+
+# 替换为阿里云 apt 源(加速 build-essential 安装)
+RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list \
+    && sed -i 's|security.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list
 
 # 安装系统依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
