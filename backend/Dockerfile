@@ -1,34 +1,42 @@
-# 用 python slim 镜像(比 miniconda 小 10 倍)
-# lanelet2 在 PyPI/GitHub 有预编译 wheel,无需 conda
+# 使用 Python slim 镜像，比 miniconda 小很多
 FROM python:3.11-slim
 
 LABEL maintainer="lanelet-editor"
 
 WORKDIR /app
 
-# 配置 pip 国内源
+# ---------- 系统依赖安装（解决 PotreeConverter 依赖） ----------
+# 安装 libtbb-dev（提供 libtbb.so.12）及其他必要库
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libtbb-dev \
+    libgomp1 \
+    libgl1-mesa-glx \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------- Python 配置 ----------
+# 配置 pip 国内源（清华大学镜像）
 RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
-# 复制依赖并安装(含 fastapi/uvicorn 等)
+# 复制依赖文件并安装 Python 包（含 fastapi, uvicorn 等）
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 安装 lanelet2 预编译 wheel
-# 优先从国内镜像下载,失败回退到 GitHub Release(用 gh-proxy 加速)
+# ---------- 安装 lanelet2（优先 PyPI，失败则从 GitHub Release 下载） ----------
 RUN pip install --no-cache-dir lanelet2 \
     || pip install --no-cache-dir \
         "https://gh-proxy.org/https://github.com/fzi-forschungszentrum-informatik/Lanelet2/releases/download/1.2.2/lanelet2-1.2.2-cp311-cp311-manylinux_2_31_x86_64.whl"
 
-# 复制应用代码
+# ---------- 复制应用代码 ----------
 COPY app ./app
 
-# 数据目录(挂载卷)
+# ---------- 创建数据目录（挂载卷） ----------
 RUN mkdir -p /app/data/raw /app/data/pointclouds
 ENV DATA_DIR=/app/data
 ENV POINTCLOUD_DIR=/app/data/pointclouds
 
-# PotreeConverter 动态库路径(挂载的宿主机编译产物)
-ENV LD_LIBRARY_PATH=/opt/potreeconverter/lib:/usr/local/lib
+# ---------- 设置 PotreeConverter 动态库路径 ----------
+# 这里 PATH 包括了系统默认的 /usr/lib/x86_64-linux-gnu（即 libtbb 安装位置）
+ENV LD_LIBRARY_PATH=/opt/potreeconverter/lib:/usr/local/lib:/usr/lib/x86_64-linux-gnu
 
 EXPOSE 8000
 
