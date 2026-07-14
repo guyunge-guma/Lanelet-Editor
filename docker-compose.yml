@@ -1,0 +1,26 @@
+services:
+  backend:
+    build: ./backend
+    container_name: lanelet-backend
+    restart: unless-stopped
+    environment:
+      - ORIGIN_LAT=31.2304       # 修改为你的采集点纬度
+      - ORIGIN_LON=121.4737       # 修改为你的采集点经度
+    volumes:
+      - ./data:/app/data          # 点云与 OSM 文件持久化
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build: ./frontend
+    container_name: lanelet-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+
+# 卷说明: ./data 目录结构
+#   data/raw/          上传的原始 PCD 文件
+#   data/pointclouds/  PotreeConverter 转换后的点云(供前端加载)
+#   data/output.osm    导出的 Lanelet2 地图文件
