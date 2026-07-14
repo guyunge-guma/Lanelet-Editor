@@ -76,7 +76,7 @@
                   <span style="color: #f56c6c">删除</span>
                 </el-dropdown-item>
               </el-dropdown-menu>
-            </el-dropdown>
+            </template>
           </el-dropdown>
         </div>
       </div>
