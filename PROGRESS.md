@@ -108,13 +108,16 @@ FastAPI (uvicorn)
 | 8 | PotreeConverter 直接转 PCD 失败 (`#points: 0`) | PCD 字段顺序异常:`curvature/intensity/rgb/normal/x/y/z`,x/y/z 在最后 | 写 `pcd2las.py` 用 numpy structured dtype 按 offset 精确读取 |
 | 9 | `numpy.frombuffer strides 参数不支持` | numpy 2.x API 变更 | 改用 structured dtype 一次性读全 |
 
-### 3.4 前端加载类(待修复)
+### 3.4 前端加载类
 
 | # | 问题 | 原因 | 解决 |
 |---|------|------|------|
 | 10 | `jquery-3.6.0.min.js` 404 返回 HTML | Potree 1.8.2 自带的是 3.1.1 | 改 index.html 引用 `jquery-3.1.1.min.js` |
 | 11 | `proj4 is not defined` | 未加载 proj4 依赖 | 加 `/libs/proj4/proj4.js` |
 | 12 | `t.Viewer is not a constructor` | jQuery/proj4 失败导致 Potree 初始化失败 | 修复依赖加载顺序后自动解决 |
+| 13 | `three.min.js` 404 | three.js 目录下没有 three.min.js | 移除,Potree 自带 three.module.js |
+| 14 | `BinaryHeap is not defined` | 可见性计算依赖未加载 | 加 `/libs/other/BinaryHeap.js` |
+| 15 | `TWEEN is not defined` | 相机动画依赖未加载 | 加 `/libs/tween/tween.min.js` |
 
 ---
 
