@@ -1,14 +1,9 @@
-# 使用 miniconda 镜像: lanelet2 在 conda-forge 上维护最好
+# 使用 miniconda 镜像: lanelet2 在 conda-forge 上预编译,无需编译工具
 FROM continuumio/miniconda3:latest
 
 LABEL maintainer="lanelet-editor"
 
-# 安装系统依赖(build-essential 用于 lanelet2 C++ 绑定)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    cmake \
-    git \
-    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
 
 # 配置 conda 国内源(加速 lanelet2 安装)
 RUN conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/ \
@@ -16,9 +11,7 @@ RUN conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pk
     && conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge/ \
     && conda config --set show_channel_urls yes
 
-WORKDIR /app
-
-# 用 conda 安装 lanelet2(避免 pip 编译失败)
+# 用 conda 安装 lanelet2(预编译包,无需 build-essential)
 RUN conda install -y -c conda-forge \
     python=3.11 \
     lanelet2 \
