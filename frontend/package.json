@@ -11,14 +11,11 @@
   "dependencies": {
     "axios": "^1.7.7",
     "element-plus": "^2.8.4",
-    "potree": "^0.0.5",
-    "three": "^0.169.0",
     "vue": "^3.5.10",
     "vue-router": "^4.4.5"
   },
   "devDependencies": {
     "@types/node": "^22.7.4",
-    "@types/three": "^0.169.0",
     "@vitejs/plugin-vue": "^5.1.4",
     "typescript": "^5.6.2",
     "vite": "^5.4.8",

@@ -6,5 +6,12 @@ declare module '*.vue' {
   export default component
 }
 
-// potree 包没有类型声明
-declare module 'potree'
+// Potree 全局声明(通过 script 标签加载,不在 npm 中)
+declare global {
+  interface Window {
+    Potree: any;
+    Potree_Utils: any;
+  }
+}
+
+export {};

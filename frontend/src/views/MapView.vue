@@ -53,7 +53,6 @@
 
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref } from 'vue'
-import * as THREE from 'three'
 import { ElMessage } from 'element-plus'
 import {
   listPointclouds,
@@ -61,9 +60,9 @@ import {
   type PointCloudItem,
 } from '../api'
 
-// Potree 库没有类型声明,用 any 处理
-// @ts-ignore
-import { Viewer as PotreeViewer } from 'potree'
+// Potree 通过 script 标签全局加载(不在 npm 中)
+// 通过 window.Potree 访问
+const Potree = window.Potree
 
 const potreeContainer = ref<HTMLDivElement>()
 const activeTab = ref('pointcloud')
@@ -77,8 +76,12 @@ let viewer: any = null
 // 初始化 Potree
 function initPotree() {
   if (!potreeContainer.value) return
+  if (!Potree) {
+    ElMessage.error('Potree 库未加载,请检查 /potree/potree.js 是否存在')
+    return
+  }
 
-  viewer = new PotreeViewer(potreeContainer.value)
+  viewer = new Potree.Viewer(potreeContainer.value)
 
   // Potree 样式
   viewer.setEDLEnabled(true)
@@ -87,7 +90,7 @@ function initPotree() {
   viewer.setPointBudget(2_000_000)
   viewer.setBackground('gradient')
 
-  // 加载 Potree GUI(可选,生产环境可关闭)
+  // 加载 Potree GUI(左侧工具栏)
   viewer.loadGUI()
 
   // 鼠标移动时拾取坐标(供后续画线使用)
@@ -97,20 +100,13 @@ function initPotree() {
 // 拾取点云坐标
 function setupMousePicking() {
   if (!viewer) return
-  // Potree 内部有 raycaster,这里通过事件监听
   const dom = viewer.renderer?.domElement || potreeContainer.value
   if (!dom) return
 
-  // 鼠标移动时显示当前坐标
+  // 鼠标移动时显示当前坐标(第 2 轮实现真正的拾取)
   dom.addEventListener('mousemove', () => {
     if (!viewer) return
-    // Potree 有内置的 IFC picking,这里简单取视图中心
-    // 真正的拾取在第 2 轮实现
-  })
-
-  // 点击拾取(占位)
-  dom.addEventListener('click', () => {
-    // 第 2 轮实现画线拾取
+    // TODO: 第 2 轮实现真正的点云拾取
   })
 }
 
@@ -119,7 +115,7 @@ async function loadPointcloud(pc: PointCloudItem) {
   if (!viewer) return
   try {
     // Potree 标准 API
-    viewer.loadPointCloud(pc.url, pc.name, (e: any) => {
+    Potree.loadPointCloud(pc.url, pc.name, (e: any) => {
       if (!e) {
         ElMessage.error('点云加载失败')
         return
@@ -149,7 +145,7 @@ async function refreshPointclouds() {
 // 上传点云
 async function handleUpload(file: File): Promise<boolean> {
   try {
-    const res = await uploadPointcloud(file)
+    await uploadPointcloud(file)
     ElMessage.success(`已上传 ${file.name},需运行 PotreeConverter 转换后刷新`)
     await refreshPointclouds()
   } catch (e) {

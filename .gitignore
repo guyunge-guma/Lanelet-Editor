@@ -22,6 +22,9 @@ data/
 *.las
 *.laz
 
+# Potree 预构建包(59MB,本地放置,不提交)
+*.zip
+
 # 环境变量
 .env
 .env.local
