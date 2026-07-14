@@ -27,6 +27,9 @@ RUN mkdir -p /app/data/raw /app/data/pointclouds
 ENV DATA_DIR=/app/data
 ENV POINTCLOUD_DIR=/app/data/pointclouds
 
+# PotreeConverter 动态库路径(挂载的宿主机编译产物)
+ENV LD_LIBRARY_PATH=/opt/potreeconverter/lib:/usr/local/lib
+
 EXPOSE 8000
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
