@@ -6,8 +6,10 @@ services:
     environment:
       - ORIGIN_LAT=31.2304       # 修改为你的采集点纬度
       - ORIGIN_LON=121.4737       # 修改为你的采集点经度
+      - POTREECONVERTER_PATH=/opt/potreeconverter/PotreeConverter
     volumes:
-      - ./data:/app/data          # 点云与 OSM 文件持久化
+      - ./data:/app/data                           # 点云与 OSM 文件持久化
+      - /opt/potreeconverter:/opt/potreeconverter:ro  # PotreeConverter(只读挂载)
     ports:
       - "8000:8000"
 
@@ -21,6 +23,9 @@ services:
       - "8080:80"
 
 # 卷说明: ./data 目录结构
-#   data/raw/          上传的原始 PCD 文件
+#   data/raw/          上传的原始 PCD/LAS 文件
 #   data/pointclouds/  PotreeConverter 转换后的点云(供前端加载)
 #   data/output.osm    导出的 Lanelet2 地图文件
+#
+# PotreeConverter: 由 build_potreeconverter.sh 编译到 /opt/potreeconverter/
+# 后端通过挂载调用,无需在容器内重新编译

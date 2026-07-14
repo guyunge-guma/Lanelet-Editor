@@ -14,6 +14,12 @@ class Settings(BaseSettings):
     # 点云目录(Potree 转换后的输出)
     pointcloud_dir: Path = Path("/app/data/pointclouds")
 
+    # 原始上传文件目录
+    raw_dir: Path = Path("/app/data/raw")
+
+    # PotreeConverter 可执行文件路径(宿主机编译后挂载)
+    potreeconverter_path: str = "/opt/potreeconverter/PotreeConverter"
+
     # Lanelet2 原点(WGS84 经纬度)
     # 默认上海,生产环境必须修改为实际采集点
     origin_lat: float = 31.2304
@@ -32,3 +38,4 @@ settings = Settings()
 # 确保数据目录存在
 settings.data_dir.mkdir(parents=True, exist_ok=True)
 settings.pointcloud_dir.mkdir(parents=True, exist_ok=True)
+settings.raw_dir.mkdir(parents=True, exist_ok=True)

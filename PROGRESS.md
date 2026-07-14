@@ -190,9 +190,44 @@ docker exec lanelet-frontend ls /usr/share/nginx/html/libs/three.js/three.min.js
 
 ## 六、后续开发计划
 
-### 第 2 轮: 点云拾取 + LineString 画线(核心功能)
+> 需求扩展(2026-07-14): 在原画线功能基础上,增加 PCD 自动转换、文件管理、
+> 红绿灯/马路沿/车道方向/点位交叉检测等 Vector Map Builder 全功能对标。
+> 拆分为 6 轮渐进式开发,每轮独立可交付。
 
-**目标**: 在点云上画车道线,提交到后端持久化
+### 第 2 轮(进行中): 文件管理 + PCD 自动转换 + 转换进度
+
+**目标**: 上传 PCD → 后端自动转 LAS + 转 Potree → 前端实时看进度 → 文件可管理
+
+#### 后端
+- [x] 集成 `pcd2las.py` 到 `app/converters/pcd2las.py`
+- [x] `POST /api/pointclouds/upload` 改造: 上传后自动触发 PCD→LAS→Potree 两步转换
+- [x] `GET /api/pointclouds/{name}/status` — 查询转换状态(pending/converting/done/error)
+- [x] `GET /api/pointclouds/{name}/progress` — SSE 流式推送转换进度
+- [x] `DELETE /api/pointclouds/{name}` — 删除点云(同时删 raw + pointcloud 目录)
+- [x] `GET /api/pointclouds/{name}/download` — 下载原始 PCD/LAS 文件
+- [x] `POST /api/pointclouds/{name}/rename` — 重命名
+- [x] `GET /api/files` — 统一文件列表(含 raw / converted / size / status)
+- [x] PotreeConverter 路径配置化(`config.py` 加 `potreeconverter_path`)
+- [x] docker-compose.yml 挂载 `/opt/potreeconverter` 到后端容器
+
+#### 前端
+- [x] 新建 `FileManager.vue` 组件(上传/进度/列表/删除/下载/重命名)
+- [x] API 封装 `api/index.ts` 新增: listFiles / uploadPointcloud / getConvertStatus / subscribeProgress / deletePointcloud / downloadUrl / renamePointcloud
+- [x] MapView.vue 集成 FileManager 到"文件"标签页
+- [x] 上传时显示转换进度条(SSE 订阅,EventSource)
+- [x] 上传完成后自动刷新列表 + 可点击加载
+- [x] 点云拾取基础能力(第 3 轮深化)
+
+#### 交付物
+- 上传 PCD 后无需手动跑脚本,后端自动完成两步转换
+- 前端实时显示"上传中 → 转换 LAS 中 → 转换 Potree 中 → 完成"
+- 可删除/下载/重命名任意点云文件
+
+---
+
+### 第 3 轮: 点云拾取 + LineString 画线 + 车道线/马路沿
+
+**目标**: 在点云上画各类线元素(车道线、马路沿、虚拟线等)
 
 #### 前端
 - [ ] Potree 点云拾取(射线检测 + 点命中)
@@ -201,64 +236,109 @@ docker exec lanelet-frontend ls /usr/share/nginx/html/libs/three.js/three.min.js
   - 实时预览折线
   - 撤销/重做
   - 完成/取消
-- [ ] LineString 列表面板(显示已绘制线条)
+- [ ] LineString 类型选择面板:
+  - `line_thin` / `line_thick` (细/粗车道线)
+  - `dashed` / `solid` (虚线/实线)
+  - `curbstone` (马路沿)
+  - `virtual` (虚拟线)
+  - `road_border` (路缘)
+- [ ] LineString 列表面板(显示已绘制线条,可编辑/删除)
 - [ ] 鼠标坐标实时显示(右下角状态栏)
 
 #### 后端
-- [ ] `POST /api/linestrings` — 创建 LineString(传 coords,返回 id)
-- [ ] `GET /api/linestrings` — 列出所有 LineString
+- [ ] `POST /api/linestrings` — 创建 LineString(传 coords + type/subtype,返回 id)
+- [ ] `GET /api/linestrings` — 列出所有 LineString(含 type/subtype/coords)
+- [ ] `PUT /api/linestrings/{id}` — 更新坐标或属性
 - [ ] `DELETE /api/linestrings/{id}` — 删除
-- [ ] lanelet2 `LineString3d` 持久化到内存/文件
+- [ ] lanelet2 `LineString3d` 持久化到内存 + JSON 文件
 
 #### 交付物
 - 前端能拾取点云坐标
-- 能画多条 LineString 并提交到后端
-- 后端用 lanelet2 库构建 LineString3d 对象
+- 能画多种类型 LineString 并提交到后端
+- 支持车道线、马路沿等不同线型
 
 ---
 
-### 第 3 轮: Lanelet 组装 + 拓扑关系
+### 第 4 轮: Lanelet 组装 + 车道方向 + 拓扑关系
 
-**目标**: 把 LineString 组装成 Lanelet,建立拓扑连接
+**目标**: 把 LineString 组装成 Lanelet,建立车道方向和拓扑连接
 
 #### 前端
-- [ ] Lanelet 组装交互(选两条 LineString → 创建 Lanelet)
-- [ ] Lanelet 可视化(半透明面片填充)
-- [ ] 拓扑编辑(连接 Lanelet 的前驱/后继)
-- [ ] 属性面板(type/subtype/speed_limit 等)
+- [ ] Lanelet 组装交互(选两条 LineString 作为左右边界 → 创建 Lanelet)
+- [ ] Lanelet 可视化(半透明面片填充 + 方向箭头)
+- [ ] 车道方向编辑(正向/反向)
+- [ ] 拓扑编辑(连接 Lanelet 的前驱/后继/汇入/汇出)
+- [ ] 属性面板(type/subtype/speed_limit/width 等)
 
 #### 后端
-- [ ] `POST /api/lanelets` — 创建 Lanelet(left_id, right_id)
+- [ ] `POST /api/lanelets` — 创建 Lanelet(left_id, right_id, attrs)
 - [ ] `GET /api/lanelets` — 列出所有 Lanelet
-- [ ] `PUT /api/lanelets/{id}/relations` — 更新拓扑关系
-- [ ] lanelet2 `Lanelet` 对象管理
+- [ ] `PUT /api/lanelets/{id}` — 更新属性或左右边界
+- [ ] `PUT /api/lanelets/{id}/relations` — 更新拓扑关系(predecessor/successor/left/right)
+- [ ] `DELETE /api/lanelets/{id}` — 删除
+- [ ] lanelet2 `Lanelet` 对象管理 + 持久化
+
+#### 交付物
+- 能把车道线组装成车道(Lanelet)
+- 能编辑车道方向和拓扑关系
+- 拓扑关系可视化(箭头/连接线)
 
 ---
 
-### 第 4 轮: OSM 导入导出 + 坐标系对齐
+### 第 5 轮: 红绿灯 + 停止线 + RegulatoryElement
 
-**目标**: 与 Autoware 对接,导出可用 .osm 文件
+**目标**: 添加交通信号元素,关联到 Lanelet
+
+#### 前端
+- [ ] 红绿灯元素创建(点位 + 朝向 + 灯组)
+- [ ] 停止线绘制(特殊 LineString)
+- [ ] 斑马线 / 人行横道
+- [ ] RegulatoryElement 关联面板(把红绿灯/停止线关联到 Lanelet)
+- [ ] 交通标志元素(限速/禁停/让行等)
+
+#### 后端
+- [ ] `POST /api/regulatory_elements` — 创建 RegulatoryElement
+- [ ] `GET /api/regulatory_elements` — 列表
+- [ ] `PUT /api/lanelets/{id}/regulatory` — 关联 RegulatoryElement 到 Lanelet
+- [ ] lanelet2 `RegulatoryElement` 管理
+
+#### 交付物
+- 能添加红绿灯、停止线、交通标志
+- 能关联到对应车道
+- 与 Autoware 交通信号感知对接
+
+---
+
+### 第 6 轮: OSM 导入导出 + 坐标系对齐 + 点位交叉检测
+
+**目标**: 与 Autoware 完整对接,支持导入现有地图 + 拓扑校验
 
 #### 关键工作
 - [ ] 坐标系对齐: PCD 局部坐标 → WGS84 经纬度(通过原点 UTM 投影)
-- [ ] `POST /api/export` — 导出 Lanelet2 .osm 文件
-- [ ] `POST /api/import` — 导入已有 .osm 文件
-- [ ] 原点配置界面(让用户输入采集地经纬度)
+- [ ] 原点配置界面(让用户输入采集地经纬度,或从 PCD VIEWPOINT 自动提取)
+- [ ] `POST /api/export` — 导出 Lanelet2 .osm 文件(含所有元素)
+- [ ] `POST /api/import` — 导入已有 .osm 文件并可视化
+- [ ] **点位交叉检测**: 自动检测 LineString 交叉点,提示可能需要加 TrafficLight/StopLine
+- [ ] **拓扑校验**: 检查 Lanelet 拓扑完整性(孤立车道、断头路、方向冲突)
+- [ ] **几何校验**: 检查 LineString 重叠、自相交
 - [ ] 在 Autoware 中验证导出的 .osm 可加载
 
 #### 交付物
-- 能导出 Autoware 可识别的 Lanelet2 地图
+- 能导出 Autoware 可识别的完整 Lanelet2 地图
 - 能导入现有 .osm 并编辑
+- 自动检测拓扑/几何问题并提示
 
 ---
 
-### 第 5 轮(可选): 高级功能
+### 第 7 轮(可选): 高级功能
 
-- [ ] 红绿灯 / 停止线 RegulatoryElement
-- [ ] 多用户 / 项目隔离
-- [ ] 版本管理(Git LFS)
+- [ ] 多用户 / 项目隔离(每个项目独立地图)
+- [ ] 版本管理(Git LFS 或自实现历史)
 - [ ] 车道线自动吸附算法(基于点云法向量估计)
 - [ ] Lanelet 拓扑可视化(D3 力导向图)
+- [ ] 批量操作(多选 LineString 批量改类型)
+- [ ] 撤销/重做全局栈
+- [ ] 导出格式扩展(OpenDRIVE)
 
 ---
 

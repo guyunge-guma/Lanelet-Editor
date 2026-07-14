@@ -11,32 +11,28 @@
     <!-- 左侧工具栏 -->
     <aside class="sidebar">
       <el-tabs v-model="activeTab">
-        <!-- 点云列表 -->
+        <!-- 文件管理(上传/转换/删除/下载) -->
+        <el-tab-pane label="文件" name="files">
+          <FileManager @load="loadPointcloudByName" />
+        </el-tab-pane>
+
+        <!-- 点云列表(已就绪的,快速加载) -->
         <el-tab-pane label="点云" name="pointcloud">
-          <el-button size="small" @click="refreshPointclouds" :loading="loading">
+          <el-button size="small" @click="refreshPointclouds" :loading="loading" style="margin-bottom:8px">
             刷新
           </el-button>
-          <el-upload
-            :show-file-list="false"
-            :before-upload="handleUpload"
-            accept=".pcd,.ply,.las,.laz"
-          >
-            <el-button size="small" type="primary" class="upload-btn">
-              上传 PCD
-            </el-button>
-          </el-upload>
-          <el-divider />
           <div v-for="pc in pointclouds" :key="pc.name" class="pc-item">
             <el-button size="small" link @click="loadPointcloud(pc)">
+              <el-icon style="margin-right:4px"><Files /></el-icon>
               {{ pc.name }}
             </el-button>
           </div>
-          <el-empty v-if="!pointclouds.length" description="暂无点云" />
+          <el-empty v-if="!pointclouds.length" description="暂无就绪点云" :image-size="40" />
         </el-tab-pane>
 
-        <!-- Lanelet2 元素(第 2 轮使用) -->
+        <!-- Lanelet2 元素(第 3 轮使用) -->
         <el-tab-pane label="元素" name="elements">
-          <p class="hint">画线/车道功能将在第 2 轮实现</p>
+          <p class="hint">画线/车道功能将在第 3 轮实现</p>
         </el-tab-pane>
       </el-tabs>
     </aside>
@@ -59,18 +55,17 @@
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import { Files } from '@element-plus/icons-vue'
+import FileManager from '../components/FileManager.vue'
 import {
   listPointclouds,
-  uploadPointcloud,
   type PointCloudItem,
 } from '../api'
 
-// Potree 通过 script 标签全局加载,运行时通过 window.Potree 动态获取
-// 不在 setup 顶层缓存,避免模块加载时序问题
 const getPotree = () => (window as any).Potree
 
 const potreeContainer = ref<HTMLDivElement>()
-const activeTab = ref('pointcloud')
+const activeTab = ref('files')
 const pointclouds = ref<PointCloudItem[]>([])
 const loading = ref(false)
 const currentPointcloud = ref('')
@@ -79,7 +74,6 @@ const initError = ref('')
 
 let viewer: any = null
 
-// 初始化 Potree
 function initPotree() {
   initError.value = ''
   if (!potreeContainer.value) {
@@ -101,21 +95,15 @@ function initPotree() {
 
   try {
     viewer = new Potree.Viewer(potreeContainer.value)
-
-    // Potree 样式
     viewer.setEDLEnabled(true)
     viewer.setEDLRadius(1.0)
     viewer.setEDLStrength(0.4)
     viewer.setPointBudget(2_000_000)
     viewer.setBackground('gradient')
-
-    // 加载 Potree GUI
     viewer.loadGUI((() => {
-      // GUI 加载后默认折叠,给我们的侧栏留空间
       const toggle = document.querySelector('#potree_sidebar_container')
       if (toggle) (toggle as HTMLElement).style.display = 'none'
     }))
-
     console.log('[Lanelet Editor] Potree Viewer 初始化成功')
   } catch (err) {
     initError.value = 'Potree 初始化异常: ' + (err as Error).message
@@ -124,7 +112,23 @@ function initPotree() {
   }
 }
 
-// 加载点云
+// 通过名字加载点云(FileManager 触发)
+async function loadPointcloudByName(name: string) {
+  const pc = pointclouds.value.find(p => p.name === name)
+  if (pc) {
+    await loadPointcloud(pc)
+  } else {
+    // 列表里没有,刷新后加载
+    await refreshPointclouds()
+    const pc2 = pointclouds.value.find(p => p.name === name)
+    if (pc2) {
+      await loadPointcloud(pc2)
+    } else {
+      ElMessage.error(`点云 ${name} 未就绪`)
+    }
+  }
+}
+
 async function loadPointcloud(pc: PointCloudItem) {
   const Potree = getPotree()
   if (!viewer || !Potree) {
@@ -142,7 +146,6 @@ async function loadPointcloud(pc: PointCloudItem) {
       viewer.fitToScreen()
       currentPointcloud.value = pc.name
       ElMessage.success(`已加载 ${pc.name}`)
-      console.log('[Lanelet Editor] 点云已加载:', e.pointcloud)
     })
   } catch (err) {
     ElMessage.error('加载失败: ' + (err as Error).message)
@@ -150,7 +153,6 @@ async function loadPointcloud(pc: PointCloudItem) {
   }
 }
 
-// 刷新点云列表
 async function refreshPointclouds() {
   loading.value = true
   try {
@@ -162,25 +164,12 @@ async function refreshPointclouds() {
   }
 }
 
-// 上传点云
-async function handleUpload(file: File): Promise<boolean> {
-  try {
-    await uploadPointcloud(file)
-    ElMessage.success(`已上传 ${file.name},需运行 PotreeConverter 转换后刷新`)
-    await refreshPointclouds()
-  } catch (e) {
-    ElMessage.error('上传失败')
-  }
-  return false  // 阻止 el-upload 默认上传
-}
-
 onMounted(async () => {
   initPotree()
   await refreshPointclouds()
 })
 
 onBeforeUnmount(() => {
-  // Potree 资源释放
   if (viewer?.renderer) {
     viewer.renderer.dispose()
   }
@@ -203,17 +192,12 @@ onBeforeUnmount(() => {
 }
 
 .sidebar {
-  width: 280px;
+  width: 300px;
   background: #fff;
   border-right: 1px solid #e0e0e0;
   padding: 12px;
   overflow-y: auto;
   flex-shrink: 0;
-}
-
-.upload-btn {
-  margin-top: 8px;
-  width: 100%;
 }
 
 .pc-item {
