@@ -11,9 +11,13 @@
   <body>
     <div id="app"></div>
 
-    <!-- Potree 依赖: jQuery + Three.js(Potree 自带) -->
-    <!-- 注意: 必须在 potree.js 之前加载 -->
-    <script src="/libs/jquery/jquery-3.6.0.min.js"></script>
+    <!-- Potree 1.8.2 依赖(顺序很重要) -->
+    <!-- 1. jQUery(Potree 1.8.2 自带 3.1.1 版本) -->
+    <script src="/libs/jquery/jquery-3.1.1.min.js"></script>
+    <!-- 2. proj4(地理坐标投影) -->
+    <script src="/libs/proj4/proj4.js"></script>
+    <!-- 3. Three.js(Potree 自带的 libs/three.js/three.min.js) -->
+    <script src="/libs/three.js/three.min.js"></script>
 
     <!-- Potree 主库(从 GitHub Release 1.8.2 预构建) -->
     <script src="/potree/potree.js"></script>
