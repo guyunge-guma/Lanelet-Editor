@@ -1,32 +1,23 @@
-# 使用 miniconda 镜像: lanelet2 在 conda-forge 上预编译
-FROM continuumio/miniconda3:latest
+# 用 python slim 镜像(比 miniconda 小 10 倍)
+# lanelet2 在 PyPI/GitHub 有预编译 wheel,无需 conda
+FROM python:3.11-slim
 
 LABEL maintainer="lanelet-editor"
 
 WORKDIR /app
 
-# 只用 conda-forge 一个 channel(减少 repodata 下载量)
-# 用清华镜像加速
-RUN conda config --remove-key channels 2>/dev/null; \
-    conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge/ \
-    && conda config --set show_channel_urls yes \
-    && conda config --set solver libmamba
-
-# 先单独装 mamba(小包,快)
-RUN conda install -y -n base -c https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge/ mamba \
-    && conda clean -afy
-
-# 用 mamba 装 lanelet2(libmamba solver,秒级解析)
-RUN mamba install -y -c https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge/ \
-    python=3.11 lanelet2 numpy \
-    && mamba clean -afy
-
 # 配置 pip 国内源
 RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
-# 复制依赖并安装
+# 复制依赖并安装(含 fastapi/uvicorn 等)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# 安装 lanelet2 预编译 wheel
+# 优先从国内镜像下载,失败回退到 GitHub Release(用 gh-proxy 加速)
+RUN pip install --no-cache-dir lanelet2 \
+    || pip install --no-cache-dir \
+        "https://gh-proxy.org/https://github.com/fzi-forschungszentrum-informatik/Lanelet2/releases/download/1.2.2/lanelet2-1.2.2-cp311-cp311-manylinux_2_31_x86_64.whl"
 
 # 复制应用代码
 COPY app ./app
