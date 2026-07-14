@@ -58,45 +58,68 @@ def compute_offsets(header):
     return offset, offsets  # (point_size, field_offsets)
 
 
-def read_points(path, header, point_size, offsets):
-    """按 offset 读取 x/y/z(和可选的 rgb/intensity)"""
+def build_structured_dtype(header):
+    """根据 PCD 头部构建 numpy structured dtype,保留所有字段(含 padding)"""
+    fields = header['fields']
+    sizes = header['size']
+    types = header['type']
+    counts = header['count']
+
+    np_type_map = {
+        ('F', 4): 'f4', ('F', 8): 'f8', ('F', 2): 'f2',
+        ('U', 1): 'u1', ('U', 2): 'u2', ('U', 4): 'u4', ('U', 8): 'u8',
+        ('I', 1): 'i1', ('I', 2): 'i2', ('I', 4): 'i4', ('I', 8): 'i8',
+    }
+
+    dtype_fields = []
+    for i, (name, sz, t, cnt) in enumerate(zip(fields, sizes, types, counts)):
+        key = (t, sz)
+        np_t = np_type_map.get(key, 'f4')
+        # padding 字段用唯一名字避免冲突
+        field_name = f"_pad{i}" if name == '_' else name
+        if cnt > 1:
+            field_name = (field_name, np_t, (cnt,))
+        else:
+            field_name = (field_name, np_t)
+        dtype_fields.append(field_name)
+
+    return np.dtype(dtype_fields)
+
+
+def read_points(path, header, structured_dtype):
+    """用 structured dtype 一次性读取所有点"""
     n = header['points']
-    print(f"读取 {n} 个点,每点 {point_size} 字节...")
+    print(f"读取 {n} 个点,dtype: {structured_dtype.itemsize} 字节/点")
 
     with open(path, 'rb') as f:
         f.seek(header['data_offset'])
-        raw = f.read(n * point_size)
+        raw = f.read(n * structured_dtype.itemsize)
 
+    pts = np.frombuffer(raw, dtype=structured_dtype, count=n)
+    return pts
+
+
+def extract_fields(pts, header):
+    """从 structured array 提取 x/y/z/rgb/intensity"""
     result = {}
+    names = pts.dtype.names
 
-    # 必需: x, y, z
     for axis in ('x', 'y', 'z'):
-        if axis not in offsets:
+        if axis not in names:
             raise ValueError(f"PCD 缺少 {axis} 字段")
-        off, sz, t, cnt = offsets[axis]
-        np_t = {'F': 'f4', 'U': 'u4', 'I': 'i4'}[t]
-        result[axis] = np.frombuffer(raw, dtype=np.dtype(np_t),
-                                     count=n, offset=off, strides=point_size).copy()
+        result[axis] = pts[axis].copy()
 
-    # 可选: intensity
-    if 'intensity' in offsets:
-        off, sz, t, cnt = offsets['intensity']
-        np_t = {'F': 'f4', 'U': 'u4', 'I': 'i4'}[t]
-        result['intensity'] = np.frombuffer(raw, dtype=np.dtype(np_t),
-                                            count=n, offset=off, strides=point_size).copy()
+    if 'intensity' in names:
+        result['intensity'] = pts['intensity'].copy()
 
-    # 可选: rgb (可能是单个 float 或 3 个 float)
     for rname in ('rgb', 'rgba'):
-        if rname in offsets:
-            off, sz, t, cnt = offsets[rname]
-            if cnt >= 3:
-                np_t = {'F': 'f4', 'U': 'u4', 'I': 'i4'}[t]
-                result['rgb'] = np.frombuffer(raw, dtype=np.dtype((np_t, 3)),
-                                             count=n, offset=off, strides=point_size).copy()
-            elif sz == 4 and t == 'F':
+        if rname in names:
+            val = pts[rname]
+            if val.ndim == 2 and val.shape[1] >= 3:
+                result['rgb'] = val[:, :3].copy()
+            elif val.dtype == np.float32:
                 # packed RGB float → uint32
-                packed = np.frombuffer(raw, dtype=np.dtype('u4'),
-                                       count=n, offset=off, strides=point_size).copy()
+                packed = val.view(np.uint32)
                 result['rgb_r'] = (packed & 0xFF).astype(np.uint16) * 257
                 result['rgb_g'] = ((packed >> 8) & 0xFF).astype(np.uint16) * 257
                 result['rgb_b'] = ((packed >> 16) & 0xFF).astype(np.uint16) * 257
@@ -153,11 +176,19 @@ def main():
     header = parse_pcd_header(in_path)
 
     point_size, offsets = compute_offsets(header)
-    print(f"字段: {list(offsets.keys())}")
+    print(f"字段: {header['fields']}")
     print(f"每点字节数: {point_size}")
     print(f"点数: {header['points']}")
 
-    points = read_points(in_path, header, point_size, offsets)
+    structured_dtype = build_structured_dtype(header)
+    print(f"numpy dtype itemsize: {structured_dtype.itemsize} (应等于 {point_size})")
+
+    if structured_dtype.itemsize != point_size:
+        raise ValueError(f"dtype 大小 {structured_dtype.itemsize} != PCD 点大小 {point_size}")
+
+    pts = read_points(in_path, header, structured_dtype)
+    points = extract_fields(pts, header)
+
     x, y, z = points['x'], points['y'], points['z']
     print(f"x 范围: [{x.min():.2f}, {x.max():.2f}]")
     print(f"y 范围: [{y.min():.2f}, {y.max():.2f}]")
