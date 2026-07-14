@@ -41,13 +41,21 @@ case "$CMD" in
     $COMPOSE logs -f
     ;;
   rebuild)
+    # 用 Docker 层缓存,只重建变更的层(改 index.html 只需 ~30s)
+    $COMPOSE down
+    $COMPOSE build
+    $COMPOSE up -d
+    echo "✅ 重新构建完成(走缓存)"
+    ;;
+  rebuild-fresh)
+    # 完全无缓存重建(只在改 Dockerfile/依赖时用)
     $COMPOSE down
     $COMPOSE build --no-cache
     $COMPOSE up -d
-    echo "✅ 重新构建完成"
+    echo "✅ 全量重建完成(无缓存)"
     ;;
   *)
-    echo "用法: $0 {build-up|up|down|logs|rebuild}"
+    echo "用法: $0 {build-up|up|down|logs|rebuild|rebuild-fresh}"
     exit 1
     ;;
 esac

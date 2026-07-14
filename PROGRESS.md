@@ -177,6 +177,7 @@ docker exec lanelet-frontend ls /usr/share/nginx/html/libs/three.js/three.min.js
 | 渲染性能 | `setPointBudget(2_000_000)` | 根据服务器 GPU 动态调整 |
 | Docker 镜像体积 | 前端 ~80MB | 用 nginx:alpine + gzip |
 | 后端启动速度 | pip 装 lanelet2 ~10s | 构建基础镜像 `lanelet2-base:latest` 缓存 |
+| **前端构建慢(400s)** | `rebuild` 用 `--no-cache` + `apk add unzip` + npm 慢 | 改为分层缓存: ① 删除 `apk add unzip`(busybox 自带) ② `rebuild` 走缓存 ③ npm 用 cache mount |
 
 ### 5.3 部署优化
 

@@ -1,8 +1,8 @@
 # 多阶段构建: 先编译 Potree + 前端,再 nginx 部署
 FROM node:20-alpine AS builder
 
-# 安装解压工具
-RUN apk add --no-cache unzip
+# 换阿里云 alpine 源(加速 apk,如需装其他包)
+RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.aliyun.com|g' /etc/apk/repositories
 
 WORKDIR /app
 
@@ -10,15 +10,17 @@ WORKDIR /app
 # (请先把 zip 文件放到 frontend/ 目录下)
 COPY Potree_1.8.2.zip /tmp/potree.zip
 
+# busybox 自带 unzip,无需 apk 安装(省 ~160s)
 RUN unzip -q /tmp/potree.zip -d /tmp/potree-extract \
     && mkdir -p /app/public/potree /app/public/libs \
     && cp -r /tmp/potree-extract/*/build/potree/* /app/public/potree/ \
     && cp -r /tmp/potree-extract/*/libs/* /app/public/libs/ \
     && rm -rf /tmp/potree.zip /tmp/potree-extract
 
-# 安装前端依赖
+# 安装前端依赖(用 cache mount 加速重复构建)
 COPY package.json package-lock.json* ./
-RUN npm config set registry https://registry.npmmirror.com \
+RUN --mount=type=cache,target=/root/.npm \
+    npm config set registry https://registry.npmmirror.com \
     && npm install
 
 COPY . .
