@@ -7,8 +7,8 @@ INSTALL_DIR=/opt/potreeconverter
 SRC_DIR=/tmp/PotreeConverter-src
 
 echo "[1/4] 安装编译依赖..."
-apt-get update -qq
-apt-get install -y -qq \
+dnf update -qq
+dnf install -y -qq \
     build-essential cmake git \
     libtbb-dev libboost-all-dev \
     liblas-dev libgdal-dev \
