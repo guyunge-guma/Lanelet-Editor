@@ -3,11 +3,7 @@ FROM continuumio/miniconda3:latest
 
 LABEL maintainer="lanelet-editor"
 
-# 替换为阿里云 apt 源(加速 build-essential 安装)
-RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list \
-    && sed -i 's|security.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list
-
-# 安装系统依赖
+# 安装系统依赖(build-essential 用于 lanelet2 C++ 绑定)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
