@@ -30,14 +30,30 @@
           <el-empty v-if="!pointclouds.length" description="暂无就绪点云" :image-size="40" />
         </el-tab-pane>
 
-        <!-- Lanelet2 元素:LineString 绘制 -->
+        <!-- Lanelet2 元素:LineString 绘制 / Lanelet 组装 -->
         <el-tab-pane label="元素" name="elements">
           <div class="elements-toolbar">
             <el-button size="small" @click="handleExportOsm" :loading="exporting">
               导出 OSM
             </el-button>
           </div>
-          <LineStringPanel @line-finished="onLineFinished" @line-deleted="onLineDeleted" />
+          <!-- 元素子标签:LineString / Lanelet -->
+          <el-radio-group v-model="elementSubTab" size="small" class="element-subtabs">
+            <el-radio-button label="linestring">LineString</el-radio-button>
+            <el-radio-button label="lanelet">Lanelet</el-radio-button>
+          </el-radio-group>
+          <!-- 使用 v-show 保持两个面板挂载,避免切换时丢失本地状态 -->
+          <div v-show="elementSubTab === 'linestring'">
+            <LineStringPanel @line-finished="onLineFinished" @line-deleted="onLineDeleted" />
+          </div>
+          <div v-show="elementSubTab === 'lanelet'">
+            <LaneletPanel
+              :linestrings="linestringsForLanelet"
+              @lanelet-created="onLaneletCreated"
+              @lanelet-deleted="onLaneletDeleted"
+              @lanelet-selected="onLaneletSelected"
+            />
+          </div>
         </el-tab-pane>
       </el-tabs>
     </aside>
@@ -57,16 +73,21 @@
         <span>线段:</span>
         <span>{{ lineIdMap.size }} 条已保存</span>
       </div>
+      <div class="status-row">
+        <span>Lanelet:</span>
+        <span>{{ selectedLaneletId !== null ? `已选中 #${selectedLaneletId}` : '未选中' }}</span>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref, provide, watch } from 'vue'
+import { onMounted, onBeforeUnmount, ref, provide, watch, type Ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Files } from '@element-plus/icons-vue'
 import FileManager from '../components/FileManager.vue'
 import LineStringPanel from '../components/LineStringPanel.vue'
+import LaneletPanel from '../components/LaneletPanel.vue'
 import { DrawingManager, type MousePos } from '../utils/DrawingManager'
 import {
   listPointclouds,
@@ -81,6 +102,8 @@ const getTHREE = () => (window as any).THREE || (window as any).Potree?.THREE
 
 const potreeContainer = ref<HTMLDivElement>()
 const activeTab = ref('files')
+// 元素子标签:LineString / Lanelet
+const elementSubTab = ref<'linestring' | 'lanelet'>('linestring')
 const pointclouds = ref<PointCloudItem[]>([])
 const loading = ref(false)
 const currentPointcloud = ref('')
@@ -89,14 +112,29 @@ const initError = ref('')
 const exporting = ref(false)
 
 let viewer: any = null
+// 将 viewer 暴露为响应式 ref,供子组件(如 LaneletPanel)inject 使用
+const viewerRef = ref<any>(null)
+provide('viewer', viewerRef)
 
-// DrawingManager 通过 provide 传给 LineStringPanel(响应式 ref,初始为 null,
+// DrawingManager 通过 provide 传给 LineStringPanel / LaneletPanel(响应式 ref,初始为 null,
 // Potree 初始化完成后赋值)
 const drawingManagerRef = ref<DrawingManager | null>(null)
 provide('drawingManager', drawingManagerRef)
 
 // 前端内部线段 id -> 后端 LineString id 的映射
 const lineIdMap = new Map<number, number>()
+
+// 传给 LaneletPanel 的 LineString 列表(使用后端 id,用于选择左右边界)
+interface LineStringForLanelet {
+  id: number
+  type: string
+  subtype: string
+  pointCount: number
+}
+const linestringsForLanelet = ref<LineStringForLanelet[]>([])
+
+// 当前选中的 Lanelet id(状态栏显示用)
+const selectedLaneletId = ref<number | null>(null)
 
 function initPotree() {
   initError.value = ''
@@ -129,6 +167,9 @@ function initPotree() {
       if (toggle) (toggle as HTMLElement).style.display = 'none'
     }))
     console.log('[Lanelet Editor] Potree Viewer 初始化成功')
+
+    // 将 viewer 暴露给子组件
+    viewerRef.value = viewer
 
     // 初始化绘制管理器
     const THREE = getTHREE()
@@ -236,6 +277,13 @@ async function onLineFinished(coords: number[], type: string, subtype: string, i
     const res = await createLinestring(coords, { type, subtype })
     if (res?.id !== undefined) {
       lineIdMap.set(internalId, res.id)
+      // 同步到 LaneletPanel 可用的边界列表
+      linestringsForLanelet.value.push({
+        id: res.id,
+        type,
+        subtype,
+        pointCount: Math.floor(coords.length / 3),
+      })
       ElMessage.success(`线段已保存(后端 id: ${res.id})`)
     }
   } catch (e: any) {
@@ -250,12 +298,33 @@ async function onLineDeleted(internalId: number) {
   const backendId = lineIdMap.get(internalId)
   lineIdMap.delete(internalId)
   if (backendId === undefined) return
+  // 从 LaneletPanel 可用边界列表中移除
+  linestringsForLanelet.value = linestringsForLanelet.value.filter(l => l.id !== backendId)
   try {
     await deleteLinestring(backendId)
   } catch (e) {
     // 后端可能暂不支持删除接口,前端已删除,忽略
     console.warn('[Lanelet Editor] 后端删除线段失败:', e)
   }
+}
+
+// ---------------- LaneletPanel 事件处理 ----------------
+
+/** Lanelet 创建成功 */
+function onLaneletCreated(id: number) {
+  console.log('[Lanelet Editor] Lanelet 已创建:', id)
+}
+
+/** Lanelet 删除 */
+function onLaneletDeleted(id: number) {
+  if (selectedLaneletId.value === id) {
+    selectedLaneletId.value = null
+  }
+}
+
+/** Lanelet 选中变化(用于状态栏显示) */
+function onLaneletSelected(id: number | null) {
+  selectedLaneletId.value = id
 }
 
 /** 导出 OSM */
@@ -271,9 +340,16 @@ async function handleExportOsm() {
   }
 }
 
-// 切换离开"元素"标签时退出绘制模式,避免事件残留
+// 切换离开"元素"标签或从 LineString 子标签切到 Lanelet 时退出绘制模式,避免事件残留
 watch(activeTab, (tab) => {
   if (tab !== 'elements') {
+    drawingManagerRef.value?.stopDrawing()
+  }
+})
+
+watch(elementSubTab, (sub) => {
+  // 离开 LineString 绘制子标签时停止绘制
+  if (sub !== 'linestring') {
     drawingManagerRef.value?.stopDrawing()
   }
 })
@@ -290,6 +366,7 @@ onBeforeUnmount(() => {
     viewer.renderer.dispose()
   }
   viewer = null
+  viewerRef.value = null
 })
 </script>
 
@@ -343,6 +420,21 @@ onBeforeUnmount(() => {
 
 .elements-toolbar {
   margin-bottom: 8px;
+}
+
+.element-subtabs {
+  width: 100%;
+  margin-bottom: 12px;
+  display: flex;
+}
+
+.element-subtabs :deep(.el-radio-button) {
+  flex: 1;
+}
+
+.element-subtabs :deep(.el-radio-button__inner) {
+  width: 100%;
+  text-align: center;
 }
 
 .status-panel {

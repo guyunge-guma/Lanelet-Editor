@@ -132,6 +132,88 @@ export async function listLanelets() {
   return data.items
 }
 
+// ---------------- Lanelet 扩展 CRUD ----------------
+
+/** Lanelet 列表项(不含坐标) */
+export interface LaneletItem {
+  id: number
+  left_id: number
+  right_id: number
+  attrs: Record<string, string>
+}
+
+/** Lanelet 几何数据(含左右边界坐标,用于前端可视化) */
+export interface LaneletGeometry {
+  id: number
+  left_coords: number[]
+  right_coords: number[]
+  attrs: Record<string, string>
+}
+
+/** Lanelet 拓扑关系 */
+export interface LaneletRelations {
+  id: number
+  predecessor: number[]
+  successor: number[]
+}
+
+/** 获取单个 Lanelet(含左右边界坐标) */
+export async function getLanelet(
+  id: number,
+): Promise<LaneletItem & { left_coords: number[]; right_coords: number[] }> {
+  const { data } = await http.get(`/lanelets/${id}`)
+  return data
+}
+
+/** 更新 Lanelet 的左右边界或属性 */
+export async function updateLanelet(
+  id: number,
+  data: { left_id?: number; right_id?: number; attrs?: Record<string, string> },
+) {
+  const res = await http.put(`/lanelets/${id}`, data)
+  return res.data
+}
+
+/** 删除单个 Lanelet */
+export async function deleteLanelet(id: number) {
+  const { data } = await http.delete(`/lanelets/${id}`)
+  return data
+}
+
+/** 获取单个 Lanelet 的几何数据(左右边界坐标) */
+export async function getLaneletGeometry(id: number): Promise<LaneletGeometry> {
+  const { data } = await http.get(`/lanelets/${id}/geometry`)
+  return data
+}
+
+/** 列出所有 Lanelet 的几何数据(一次拉取,用于前端批量可视化) */
+export async function listLaneletsWithGeometry(): Promise<LaneletGeometry[]> {
+  const { data } = await http.get('/lanelets/geometry')
+  return data.items
+}
+
+/** 设置 Lanelet 的前驱/后继关系 */
+export async function setLaneletRelations(
+  id: number,
+  predecessor: number[],
+  successor: number[],
+) {
+  const { data } = await http.put(`/lanelets/${id}/relations`, { predecessor, successor })
+  return data
+}
+
+/** 获取单个 Lanelet 的前驱/后继关系 */
+export async function getLaneletRelations(id: number): Promise<LaneletRelations> {
+  const { data } = await http.get(`/lanelets/${id}/relations`)
+  return data
+}
+
+/** 获取所有 Lanelet 的拓扑关系(用于关系编辑时的候选列表) */
+export async function getAllLaneletRelations(): Promise<LaneletRelations[]> {
+  const { data } = await http.get('/lanelets/relations')
+  return data.items
+}
+
 // ---------------- LineString 扩展 CRUD ----------------
 
 /** LineString 完整数据(含坐标与属性) */

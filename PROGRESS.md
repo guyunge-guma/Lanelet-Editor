@@ -305,24 +305,35 @@ docker exec lanelet-backend cat /app/data/pointclouds/industrial_area/metadata.j
 
 ---
 
-### 第 4 轮: Lanelet 组装 + 车道方向 + 拓扑关系
+### 第 4 轮: Lanelet 组装 + 车道方向 + 拓扑关系 ✅
 
 **目标**: 把 LineString 组装成 Lanelet,建立车道方向和拓扑连接
 
 #### 前端
-- [ ] Lanelet 组装交互(选两条 LineString 作为左右边界 → 创建 Lanelet)
-- [ ] Lanelet 可视化(半透明面片填充 + 方向箭头)
-- [ ] 车道方向编辑(正向/反向)
-- [ ] 拓扑编辑(连接 Lanelet 的前驱/后继/汇入/汇出)
-- [ ] 属性面板(type/subtype/speed_limit/width 等)
+- [x] Lanelet 组装交互(选两条 LineString 作为左右边界 → 创建 Lanelet) — `LaneletPanel.vue`
+- [x] Lanelet 可视化(半透明面片填充 + 方向箭头) — `DrawingManager.addLaneletMesh()`
+- [x] 车道方向编辑(正向/反向) — 面片 + ArrowHelper
+- [x] 拓扑编辑(连接 Lanelet 的前驱/后继) — 多选下拉框 + `setLaneletRelations` API
+- [x] 属性面板(subtype: road/urban/intersection/speed_bump)
+- [x] Lanelet 列表(点击高亮、删除、清空)
+- [x] 颜色图例(road=绿/urban=蓝/intersection=黄/speed_bump=红)
 
 #### 后端
-- [ ] `POST /api/lanelets` — 创建 Lanelet(left_id, right_id, attrs)
-- [ ] `GET /api/lanelets` — 列出所有 Lanelet
-- [ ] `PUT /api/lanelets/{id}` — 更新属性或左右边界
-- [ ] `PUT /api/lanelets/{id}/relations` — 更新拓扑关系(predecessor/successor/left/right)
-- [ ] `DELETE /api/lanelets/{id}` — 删除
-- [ ] lanelet2 `Lanelet` 对象管理 + 持久化
+- [x] `POST /api/lanelets` — 创建 Lanelet(left_id, right_id, attrs)
+- [x] `GET /api/lanelets` — 列出所有 Lanelet
+- [x] `GET /api/lanelets/{id}` — 获取单个 Lanelet(含左右边界坐标)
+- [x] `PUT /api/lanelets/{id}` — 更新属性或左右边界(删旧建新,返回新 id)
+- [x] `DELETE /api/lanelets/{id}` — 删除
+- [x] `GET /api/lanelets/{id}/geometry` — 获取几何数据(左右边界坐标)
+- [x] `PUT /api/lanelets/{id}/relations` — 设置拓扑关系(predecessor/successor)
+- [x] `GET /api/lanelets/{id}/relations` — 获取拓扑关系
+- [x] `GET /api/lanelets/relations` — 获取所有 Lanelet 拓扑关系
+- [x] `GET /api/lanelets/geometry` — 列出所有 Lanelet 带几何数据
+- [x] lanelet2 `Lanelet` 对象管理 + 持久化(JSON 中含 predecessor/successor 属性)
+- [x] 修复 `lanelet2_service.py` 降级模式 `Origin` 未守卫的 bug
+
+#### 新增文件
+- `frontend/src/components/LaneletPanel.vue` — Lanelet 组装/列表/属性/拓扑编辑面板
 
 #### 交付物
 - 能把车道线组装成车道(Lanelet)

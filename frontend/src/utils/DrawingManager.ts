@@ -37,6 +37,22 @@ export const TYPE_LABELS: Record<string, string> = {
   road_border: '道路边界',
 }
 
+/** Lanelet subtype -> Three.js 颜色值(0xRRGGBB) */
+export const LANELET_SUBTYPE_COLORS: Record<string, number> = {
+  road: 0x00ff00, // 绿色
+  urban: 0x0066ff, // 蓝色
+  intersection: 0xffff00, // 黄色
+  speed_bump: 0xff0000, // 红色
+}
+
+/** Lanelet subtype 中文标签 */
+export const LANELET_SUBTYPE_LABELS: Record<string, string> = {
+  road: '道路',
+  urban: '城市',
+  intersection: '交叉口',
+  speed_bump: '减速带',
+}
+
 /** 预览线缓冲区最大点数(足够绘制超长折线) */
 const MAX_PREVIEW_POINTS = 10000
 /** 锚点半径(米) */
@@ -56,6 +72,24 @@ interface FinishedLine {
   type: string
   subtype: string
   coords: number[]
+}
+
+/** Lanelet 可视化记录(半透明面片 + 方向箭头) */
+interface LaneletMesh {
+  /** Lanelet 后端 id */
+  id: number
+  /** 半透明面片 Mesh */
+  mesh: any
+  /** 面片几何体 */
+  geometry: any
+  /** 面片材质 */
+  material: any
+  /** 方向箭头 */
+  arrow: any
+  /** 基础颜色(用于高亮恢复) */
+  baseColor: number
+  /** 基础不透明度(用于高亮恢复) */
+  baseOpacity: number
 }
 
 export class DrawingManager {
@@ -89,6 +123,9 @@ export class DrawingManager {
   private finishedLines: Map<number, FinishedLine> = new Map()
   /** 下一条线段的内部 id */
   private nextLineId = 1
+
+  /** Lanelet 可视化:id -> 记录(键为后端 Lanelet id) */
+  private laneletMeshes: Map<number, LaneletMesh> = new Map()
 
   /** 上次悬停拾取时间戳(节流) */
   private lastHoverTime = 0
@@ -333,6 +370,189 @@ export class DrawingManager {
     return this.finishedLines.size
   }
 
+  // ============================================================
+  //  Lanelet 可视化
+  // ============================================================
+
+  /**
+   * 添加 Lanelet 面片 + 方向箭头
+   *
+   * - 左右边界坐标组成闭合多边形(左边界正向 + 右边界反向)
+   * - 用 THREE.Shape + ShapeGeometry 生成网格
+   * - 材质:半透明 MeshBasicMaterial,DoubleSide
+   * - 方向箭头位于 Lanelet 中心,方向由左边界起点指向终点
+   *
+   * @param id Lanelet 后端 id(同 id 会先移除旧可视化)
+   * @param leftCoords 左边界扁平坐标 [x0,y0,z0, ...]
+   * @param rightCoords 右边界扁平坐标 [x0,y0,z0, ...]
+   * @param color 面片颜色(0xRRGGBB)
+   * @param direction 方向:'forward'(左边界起点->终点) | 'backward'(反向)
+   */
+  addLaneletMesh(
+    id: number,
+    leftCoords: number[],
+    rightCoords: number[],
+    color: number,
+    direction: 'forward' | 'backward' = 'forward',
+  ): void {
+    // 同 id 先移除旧的,避免重复
+    this.removeLaneletMesh(id)
+
+    const THREE = this.THREE
+    if (!THREE || !this.viewer) return
+
+    // 解析左右边界点
+    const leftPts = this.parseCoords(leftCoords)
+    const rightPts = this.parseCoords(rightCoords)
+    if (leftPts.length < 2 || rightPts.length < 2) return
+
+    // 计算边界平均 Z(将多边形放置在边界平均高度,近似贴合路面)
+    let sumZ = 0
+    let zCount = 0
+    for (const p of leftPts) { sumZ += p.z; zCount++ }
+    for (const p of rightPts) { sumZ += p.z; zCount++ }
+    const avgZ = zCount > 0 ? sumZ / zCount : 0
+
+    // 构造闭合多边形:左边界正向 + 右边界反向
+    const allPts = [...leftPts, ...rightPts.slice().reverse()]
+    if (allPts.length < 3) return
+
+    const shape = new THREE.Shape()
+    shape.moveTo(allPts[0].x, allPts[0].y)
+    for (let i = 1; i < allPts.length; i++) {
+      shape.lineTo(allPts[i].x, allPts[i].y)
+    }
+    shape.closePath()
+
+    const geometry = new THREE.ShapeGeometry(shape)
+    // ShapeGeometry 生成在 XY 平面(z=0),将所有顶点 Z 抬到边界平均高度
+    const positions = geometry.attributes.position
+    if (positions) {
+      for (let i = 0; i < positions.count; i++) {
+        positions.setZ(i, avgZ)
+      }
+      positions.needsUpdate = true
+    }
+    geometry.computeVertexNormals()
+
+    const material = new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.3,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    })
+    const mesh = new THREE.Mesh(geometry, material)
+    mesh.renderOrder = 900
+    this.threeScene.add(mesh)
+
+    // 方向箭头:位于 Lanelet 中心,方向由左边界起点指向终点
+    const leftStart = new THREE.Vector3(leftPts[0].x, leftPts[0].y, leftPts[0].z)
+    const leftEnd = new THREE.Vector3(
+      leftPts[leftPts.length - 1].x,
+      leftPts[leftPts.length - 1].y,
+      leftPts[leftPts.length - 1].z,
+    )
+    let dirVec = new THREE.Vector3().subVectors(leftEnd, leftStart)
+    if (dirVec.lengthSq() < 1e-6) {
+      dirVec = new THREE.Vector3(1, 0, 0)
+    }
+    dirVec.normalize()
+    if (direction === 'backward') {
+      dirVec.negate()
+    }
+
+    // 中心点(左右边界所有点的平均)
+    let cx = 0, cy = 0, cz = 0
+    let cn = 0
+    for (const p of leftPts) { cx += p.x; cy += p.y; cz += p.z; cn++ }
+    for (const p of rightPts) { cx += p.x; cy += p.y; cz += p.z; cn++ }
+    const center = new THREE.Vector3(
+      cn > 0 ? cx / cn : 0,
+      cn > 0 ? cy / cn : 0,
+      cn > 0 ? cz / cn : avgZ,
+    )
+
+    // 箭头长度:边界总长度的 1/4,限制在 [1, 8] 米
+    const boundLen = this.estimateBoundLength(leftPts)
+    const arrowLen = Math.min(8, Math.max(1, boundLen / 4))
+    const arrow = new THREE.ArrowHelper(
+      dirVec,
+      center,
+      arrowLen,
+      color,
+      arrowLen * 0.3,
+      arrowLen * 0.2,
+    )
+    arrow.renderOrder = 901
+    this.threeScene.add(arrow)
+
+    this.laneletMeshes.set(id, {
+      id,
+      mesh,
+      geometry,
+      material,
+      arrow,
+      baseColor: color,
+      baseOpacity: 0.3,
+    })
+  }
+
+  /** 移除 Lanelet 可视化(释放几何体与材质) */
+  removeLaneletMesh(id: number): void {
+    const entry = this.laneletMeshes.get(id)
+    if (!entry) return
+    this.threeScene.remove(entry.mesh)
+    this.threeScene.remove(entry.arrow)
+    entry.geometry.dispose()
+    entry.material.dispose()
+    // ArrowHelper 由 line(LineBasicMaterial) + cone(MeshBasicMaterial) 组成
+    try {
+      entry.arrow.line?.geometry?.dispose?.()
+      entry.arrow.line?.material?.dispose?.()
+      entry.arrow.cone?.geometry?.dispose?.()
+      entry.arrow.cone?.material?.dispose?.()
+    } catch {
+      // 忽略释放异常
+    }
+    this.laneletMeshes.delete(id)
+  }
+
+  /**
+   * 高亮 / 取消高亮 Lanelet
+   * - 高亮:提高不透明度并开启深度写入,使其更醒目
+   * - 取消:恢复基础不透明度
+   */
+  highlightLanelet(id: number, highlight: boolean): void {
+    const entry = this.laneletMeshes.get(id)
+    if (!entry) return
+    if (highlight) {
+      entry.material.opacity = Math.min(0.85, entry.baseOpacity + 0.4)
+      entry.material.depthWrite = true
+    } else {
+      entry.material.opacity = entry.baseOpacity
+      entry.material.depthWrite = false
+    }
+    entry.material.needsUpdate = true
+  }
+
+  /** 清除所有 Lanelet 可视化 */
+  clearAllLaneletMeshes(): void {
+    for (const id of Array.from(this.laneletMeshes.keys())) {
+      this.removeLaneletMesh(id)
+    }
+  }
+
+  /** 获取当前可视化的 Lanelet 数量 */
+  getLaneletMeshCount(): number {
+    return this.laneletMeshes.size
+  }
+
+  /** 判断指定 Lanelet 是否已可视化 */
+  hasLaneletMesh(id: number): boolean {
+    return this.laneletMeshes.has(id)
+  }
+
   /** 点云加载/切换后通知(预留:可在此重置预览或做适配) */
   notifyPointcloudChanged(): void {
     // 当前拾取基于 viewer.scene.pointclouds 自动适配,无需特殊处理
@@ -347,6 +567,7 @@ export class DrawingManager {
   dispose(): void {
     this.stopDrawing()
     this.clearAllFinishedLines()
+    this.clearAllLaneletMeshes()
     const dom = this.getDomElement()
     if (dom) {
       dom.removeEventListener('mousemove', this.boundMouseMove, true)
@@ -565,6 +786,27 @@ export class DrawingManager {
       coords.push(p.x, p.y, p.z)
     }
     return coords
+  }
+
+  /** 将扁平坐标数组 [x0,y0,z0,...] 解析为 {x,y,z} 数组 */
+  private parseCoords(coords: number[]): { x: number; y: number; z: number }[] {
+    const pts: { x: number; y: number; z: number }[] = []
+    for (let i = 0; i + 2 < coords.length; i += 3) {
+      pts.push({ x: coords[i], y: coords[i + 1], z: coords[i + 2] })
+    }
+    return pts
+  }
+
+  /** 估算折线总长度(用于自适应箭头大小) */
+  private estimateBoundLength(pts: { x: number; y: number; z: number }[]): number {
+    let total = 0
+    for (let i = 1; i < pts.length; i++) {
+      const dx = pts[i].x - pts[i - 1].x
+      const dy = pts[i].y - pts[i - 1].y
+      const dz = pts[i].z - pts[i - 1].z
+      total += Math.sqrt(dx * dx + dy * dy + dz * dz)
+    }
+    return total
   }
 
   /** 禁用 Potree 默认相机交互 */

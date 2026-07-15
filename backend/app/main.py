@@ -534,6 +534,17 @@ class LaneletReq(BaseModel):
     attrs: dict[str, str] | None = None
 
 
+class LaneletUpdateReq(BaseModel):
+    left_id: int | None = None
+    right_id: int | None = None
+    attrs: dict[str, str] | None = None
+
+
+class LaneletRelationsReq(BaseModel):
+    predecessor: list[int] | None = None
+    successor: list[int] | None = None
+
+
 class MapFileReq(BaseModel):
     path: str | None = None        # 为 None 时使用 settings.map_file 默认路径
 
@@ -663,6 +674,94 @@ def create_lanelet(req: LaneletReq) -> dict[str, Any]:
 @app.get("/api/lanelets")
 def get_lanelets() -> dict[str, Any]:
     return {"items": ll_service.list_lanelets()}
+
+
+# 以下两个字面量路由必须放在 /api/lanelets/{ll_id} 之前注册,
+# 否则 {ll_id}(int) 会先尝试匹配 "relations"/"geometry"(虽 int 转换会失败,但显式靠前更清晰)
+
+
+@app.get("/api/lanelets/relations")
+def get_all_lanelet_relations() -> dict[str, Any]:
+    """获取所有 Lanelet 的拓扑关系(前驱/后继)"""
+    return {"items": ll_service.get_all_relations()}
+
+
+@app.get("/api/lanelets/geometry")
+def list_lanelets_geometry() -> dict[str, Any]:
+    """列出所有 Lanelet 带几何数据(左右边界坐标)"""
+    return {"items": ll_service.list_lanelets_with_geometry()}
+
+
+@app.get("/api/lanelets/{ll_id}")
+def get_lanelet(ll_id: int) -> dict[str, Any]:
+    """获取单个 Lanelet(含左右边界坐标)"""
+    ll = ll_service.get_lanelet(ll_id)
+    if ll is None:
+        raise HTTPException(404, f"Lanelet {ll_id} 不存在")
+    return ll
+
+
+@app.put("/api/lanelets/{ll_id}")
+def update_lanelet(ll_id: int, req: LaneletUpdateReq) -> dict[str, Any]:
+    """更新 Lanelet 的左右边界或属性
+
+    由于 lanelet2 ID 固定,更新会删除旧的并创建新的,返回新 ID。
+    """
+    try:
+        new_id = ll_service.update_lanelet(
+            ll_id, req.left_id, req.right_id, req.attrs
+        )
+        return {"old_id": ll_id, "id": new_id}
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.delete("/api/lanelets/{ll_id}")
+def delete_lanelet(ll_id: int) -> dict[str, Any]:
+    """删除单个 Lanelet"""
+    deleted = ll_service.delete_lanelet(ll_id)
+    if not deleted:
+        raise HTTPException(404, f"Lanelet {ll_id} 不存在")
+    return {"deleted": ll_id}
+
+
+@app.get("/api/lanelets/{ll_id}/geometry")
+def get_lanelet_geometry(ll_id: int) -> dict[str, Any]:
+    """获取 Lanelet 几何数据(左右边界坐标,用于前端绘制)"""
+    geom = ll_service.get_lanelet_geometry(ll_id)
+    if geom is None:
+        raise HTTPException(404, f"Lanelet {ll_id} 不存在")
+    return geom
+
+
+@app.put("/api/lanelets/{ll_id}/relations")
+def set_lanelet_relations(ll_id: int, req: LaneletRelationsReq) -> dict[str, Any]:
+    """设置 Lanelet 的前驱/后继拓扑关系
+
+    body: {predecessor: [int] | null, successor: [int] | null}
+    - null 表示不修改该方向
+    - 空数组表示清除该方向
+    """
+    try:
+        ll_service.set_lanelet_relations(ll_id, req.predecessor, req.successor)
+        # 返回设置后的实际关系
+        rel = ll_service.get_lanelet_relations(ll_id)
+        return rel
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/lanelets/{ll_id}/relations")
+def get_lanelet_relations(ll_id: int) -> dict[str, Any]:
+    """获取 Lanelet 的前驱/后继拓扑关系"""
+    rel = ll_service.get_lanelet_relations(ll_id)
+    if rel is None:
+        raise HTTPException(404, f"Lanelet {ll_id} 不存在")
+    return rel
 
 
 @app.get("/api/map/health")
