@@ -57,21 +57,29 @@ echo ""
 echo "=== 3. 复制到 $INSTALL_DIR/lib/ ==="
 mkdir -p "$INSTALL_DIR/lib"
 
-# 复制实际文件(跟随符号链接)
-cp -L "$TBB_LIB" "$INSTALL_DIR/lib/"
+# 关键: 先复制真实文件(跟随符号链接),用 SONAME 命名
+# 不能先 cp 再 ln -sf,否则 ln 会把刚复制的真实文件替换成指向不存在文件的坏链接
+TBB_SONAME=$(basename "$TBB_LIB")      # 如: libtbb.so.12
+TBB_REALNAME=$(basename "$TBB_REAL")    # 如: libtbb.so.12.11
 
-# 确保文件名是 libtbb.so.12
-TBB_SONAME=$(basename "$TBB_LIB")
-TBB_REALNAME=$(basename "$TBB_REAL")
-if [ "$TBB_SONAME" != "$TBB_REALNAME" ]; then
-    (cd "$INSTALL_DIR/lib" && ln -sf "$TBB_REALNAME" "$TBB_SONAME")
+# 删除可能存在的旧文件/坏链接
+rm -f "$INSTALL_DIR/lib/$TBB_SONAME" "$INSTALL_DIR/lib/$TBB_REALNAME"
+
+# 复制真实文件内容(用 -L 跟随符号链接),保存为 SONAME
+cp -L "$TBB_LIB" "$INSTALL_DIR/lib/$TBB_SONAME"
+
+# 验证是真实文件而非符号链接
+if [ -L "$INSTALL_DIR/lib/$TBB_SONAME" ]; then
+    echo "❌ 错误: 复制后仍为符号链接,手动修复:"
+    echo "   cp -L $TBB_REAL $INSTALL_DIR/lib/$TBB_SONAME"
+    exit 1
 fi
 
-echo "已复制: $TBB_LIB -> $INSTALL_DIR/lib/$TBB_SONAME"
+echo "已复制: $TBB_REAL -> $INSTALL_DIR/lib/$TBB_SONAME (真实文件, $(stat -c%s "$INSTALL_DIR/lib/$TBB_SONAME") 字节)"
 
 echo ""
 echo "=== 4. 验证依赖(使用安装目录的库) ==="
-LD_LIBRARY_PATH="$INSTALL_DIR/lib:$LD_LIBRARY_PATH" ldd "$CONVERTER" | grep -E "libtbb|liblaszip"
+LD_LIBRARY_PATH="$INSTALL_DIR/lib" ldd "$CONVERTER" | grep -E "libtbb|liblaszip"
 
 echo ""
 echo "=== 5. 容器内验证 ==="

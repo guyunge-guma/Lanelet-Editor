@@ -54,15 +54,16 @@ echo ""
 echo "查找并复制 libtbb 动态库..."
 TBB_LIB=$(ldd "$INSTALL_DIR/PotreeConverter" | grep libtbb | awk '{print $3}')
 if [ -n "$TBB_LIB" ]; then
-    # 复制实际文件(跟随符号链接)
-    cp -L "$TBB_LIB" "$INSTALL_DIR/lib/"
-    TBB_REALNAME=$(basename "$(readlink -f "$TBB_LIB")")
+    # 复制真实文件内容(用 -L 跟随符号链接),直接保存为 SONAME
+    # 不能先 cp 再 ln -sf,否则 ln 会把真实文件替换成指向不存在文件的坏链接
     TBB_SONAME=$(basename "$TBB_LIB")
-    # 如果复制后的文件名不是 libtbb.so.12,创建符号链接
-    if [ "$TBB_REALNAME" != "$TBB_SONAME" ]; then
-        (cd "$INSTALL_DIR/lib" && ln -sf "$TBB_REALNAME" "$TBB_SONAME")
+    rm -f "$INSTALL_DIR/lib/$TBB_SONAME"
+    cp -L "$TBB_LIB" "$INSTALL_DIR/lib/$TBB_SONAME"
+    if [ -L "$INSTALL_DIR/lib/$TBB_SONAME" ]; then
+        echo "  ⚠️ 警告: 复制后仍为符号链接,请手动修复"
+    else
+        echo "  ✅ 已复制: $TBB_LIB -> $INSTALL_DIR/lib/$TBB_SONAME (真实文件)"
     fi
-    echo "  ✅ 已复制: $TBB_LIB -> $INSTALL_DIR/lib/$TBB_SONAME"
 else
     echo "  ⚠️  警告: 未找到 libtbb 依赖,PotreeConverter 可能无法在容器中运行"
     echo "     请确认 tbb-devel 已安装"

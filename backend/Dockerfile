@@ -5,14 +5,14 @@ LABEL maintainer="lanelet-editor"
 
 WORKDIR /app
 
-# ---------- 系统依赖安装（解决 PotreeConverter 依赖） ----------
-# 安装 libtbb-dev（提供 libtbb.so.12）及其他必要库
-# 注意: PotreeConverter 在宿主机编译,链接的是宿主机的 libtbb。
-# 宿主机的 libtbb.so.12 会通过 build_potreeconverter.sh 复制到
+# ---------- 系统依赖安装 ----------
+# 注意: 故意不安装 libtbb-dev!
+# PotreeConverter 在宿主机(RHEL 10)编译,链接的是宿主机的 libtbb.so.12。
+# 宿主机的 libtbb.so.12 通过 build_potreeconverter.sh / fix_libtbb.sh 复制到
 # /opt/potreeconverter/lib/ 并挂载到容器,确保 ABI 完全匹配。
-# 这里安装的 libtbb-dev 仅作为 fallback。
+# 如果容器内安装 Debian 版的 libtbb,会与 RHEL 编译的二进制 ABI 不兼容,
+# 导致 TBB 并行处理静默失败,点位大幅丢失(259万点 → 几乎为空)。
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libtbb-dev \
     libgomp1 \
     libgl1-mesa-glx \
     && rm -rf /var/lib/apt/lists/*
