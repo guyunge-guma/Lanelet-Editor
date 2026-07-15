@@ -753,6 +753,30 @@ export class DrawingManager {
   }
 
   /**
+   * 获取相机对象(Potree 1.8.2 不同构建方式下 camera 位置不一致)
+   * 优先级: viewer.scene.camera → viewer.scene.getActiveCamera() → viewer.camera
+   */
+  private getCamera(): any | null {
+    if (!this.viewer) return null
+    const scene = this.viewer.scene
+    if (!scene) return null
+
+    // 路径 1: scene.camera(Potree 标准路径)
+    if (scene.camera) return scene.camera
+
+    // 路径 2: scene.getActiveCamera()(部分 Potree 版本)
+    if (typeof scene.getActiveCamera === 'function') {
+      const cam = scene.getActiveCamera()
+      if (cam) return cam
+    }
+
+    // 路径 3: viewer.camera(Potree 1.8 Viewer 直接持有)
+    if (this.viewer.camera) return this.viewer.camera
+
+    return null
+  }
+
+  /**
    * Potree 1.8.2 点云拾取:从鼠标位置发射射线,在所有点云中找最近命中点
    *
    * 关键:必须传 THREE.Ray 实例给 pc.pick(),不能用普通对象。
@@ -777,9 +801,9 @@ export class DrawingManager {
     const x = ((event.clientX - rect.left) / rect.width) * 2 - 1
     const y = -((event.clientY - rect.top) / rect.height) * 2 + 1
 
-    const camera = this.viewer.scene.camera
+    const camera = this.getCamera()
     if (!camera) {
-      console.warn('[DrawingManager] pickPoint: 无法获取 camera')
+      console.warn('[DrawingManager] pickPoint: 无法获取 camera, viewer keys:', Object.keys(this.viewer), 'scene keys:', Object.keys(this.viewer.scene || {}))
       return null
     }
 
