@@ -136,10 +136,14 @@ export class DrawingManager {
   /** 绑定后的事件处理函数引用(便于移除监听) */
   private boundMouseMove: (e: MouseEvent) => void
   private boundMouseDown: (e: MouseEvent) => void
-  private boundClick: (e: MouseEvent) => void
+  private boundMouseUp: (e: MouseEvent) => void
   private boundDblClick: (e: MouseEvent) => void
   private boundContextMenu: (e: MouseEvent) => void
   private boundKeyDown: (e: KeyboardEvent) => void
+
+  /** mousedown 时记录的坐标,用于 mouseup 判断是否为简单点击(非拖拽) */
+  private mouseDownX = 0
+  private mouseDownY = 0
 
   // ---------------- 回调(单一订阅者) ----------------
   /** 锚点添加时触发,参数为当前所有锚点的扁平坐标 [x0,y0,z0,...] */
@@ -157,7 +161,7 @@ export class DrawingManager {
 
     this.boundMouseMove = this.handleMouseMove.bind(this)
     this.boundMouseDown = this.handleMouseDown.bind(this)
-    this.boundClick = this.handleClick.bind(this)
+    this.boundMouseUp = this.handleMouseUp.bind(this)
     this.boundDblClick = this.handleDblClick.bind(this)
     this.boundContextMenu = this.handleContextMenu.bind(this)
     this.boundKeyDown = this.handleKeyDown.bind(this)
@@ -228,9 +232,9 @@ export class DrawingManager {
     const dom = this.getDomElement()
     if (dom) {
       // 拦截左键 mousedown,防止 Potree InputHandler 启动旋转
-      // click 事件仍会正常触发(与 mousedown 是独立事件),用于放置锚点
       dom.addEventListener('mousedown', this.boundMouseDown, true)
-      dom.addEventListener('click', this.boundClick, true)
+      // mouseup 检测简单点击(非拖拽),用于放置锚点
+      dom.addEventListener('mouseup', this.boundMouseUp, true)
       dom.addEventListener('dblclick', this.boundDblClick, true)
       // contextmenu 已在构造函数中始终注册,无需重复
     }
@@ -248,7 +252,7 @@ export class DrawingManager {
     const dom = this.getDomElement()
     if (dom) {
       dom.removeEventListener('mousedown', this.boundMouseDown, true)
-      dom.removeEventListener('click', this.boundClick, true)
+      dom.removeEventListener('mouseup', this.boundMouseUp, true)
       dom.removeEventListener('dblclick', this.boundDblClick, true)
       // contextmenu 始终保留(构造函数中注册)
     }
@@ -619,21 +623,25 @@ export class DrawingManager {
   private handleMouseDown(event: MouseEvent): void {
     if (!this.isDrawing) return
     if (event.button !== 0) return // 仅拦截左键
+    // 记录按下位置,用于 mouseup 判断是否为简单点击
+    this.mouseDownX = event.clientX
+    this.mouseDownY = event.clientY
     // 阻止 Potree InputHandler 收到左键 mousedown,防止启动旋转
-    // click 事件仍会正常触发(与 mousedown 是独立事件),用于放置锚点
     event.stopImmediatePropagation()
   }
 
-  private handleClick(event: MouseEvent): void {
+  private handleMouseUp(event: MouseEvent): void {
     if (!this.isDrawing) return
-    // 只响应左键单击(用于放置锚点)
-    if (event.button !== 0) return
-    // 不阻止冒泡 — Potree 的 click 通常不会干扰(拖拽是 mousedown+mousemove)
-    // 只在确实命中点云时阻止默认行为
-    const point = this.pickPoint(event)
-    if (!point) return // 未命中任何点云,忽略
+    if (event.button !== 0) return // 仅响应左键
+    // 判断是否为简单点击(鼠标移动距离小于阈值,非拖拽)
+    const dx = event.clientX - this.mouseDownX
+    const dy = event.clientY - this.mouseDownY
+    if (Math.sqrt(dx * dx + dy * dy) > 5) return // 拖拽,忽略
+    // 简单点击:拾取点云并放置锚点
     event.stopImmediatePropagation()
     event.preventDefault()
+    const point = this.pickPoint(event)
+    if (!point) return // 未命中点云,忽略
     this.addPoint(point)
   }
 

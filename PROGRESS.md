@@ -137,7 +137,7 @@ FastAPI (uvicorn)
 | 32 | el-radio `label act as value is about to be deprecated` | Element Plus 3.0.0 的 el-radio-button 用 `label` 作为值已废弃 | 改用 `value` 属性 |
 | 33 | 绘制模式下左键点击无反应 + 无法移动视角 | `disablePotreeNavigation()` 完全禁用了 `inputHandler.enabled=false`,导致所有鼠标交互失效;`handleMouseMove` 也 `stopImmediatePropagation` 阻止了 Potree 导航事件 | 不禁用 `inputHandler`,只拦截左键 `click` 放置锚点;`mousemove` 不阻止冒泡;右键拖拽旋转 + 中键/滚轮缩放保持可用 |
 | 34 | three.js CDN 在内网环境加载失败 | 内网无法访问 `cdn.jsdelivr.net` | 动态加载脚本,CDN 失败后依次尝试 4 个本地路径;DrawingManager 初始化增加 3 秒重试等待 |
-| 35 | 绘制模式下左键单击无法放置锚点(Potree 左键旋转吞掉事件) | Potree InputHandler 在 `mousedown` 捕获阶段启动旋转,`click` 事件被干扰或无法正常触发,DrawingManager 的 `handleClick` 无法放点 | 绘制模式下在捕获阶段拦截左键 `mousedown` 并 `stopImmediatePropagation`,阻止 Potree 启动旋转;`click` 仍正常触发用于放点;右键拖拽平移和滚轮缩放保持可用 |
+| 35 | 绘制模式下左键单击无法放置锚点 | Potree InputHandler 在 `click` 捕获阶段先注册,`stopImmediatePropagation()` 阻止了 DrawingManager 的 `handleClick` 执行;`mousedown` 被 Potree 拦截启动旋转 | 绘制模式下捕获阶段拦截左键 `mousedown` 阻止旋转 + 改用 `mouseup` 检测简单点击(移动<5px)放点,完全不依赖 `click` 事件 |
 | 36 | 右键单击弹出 utools/Windows 系统菜单 | `contextmenu` 只在绘制模式注册,非绘制模式右键会弹出系统菜单 | 将 `contextmenu` 监听移至构造函数,始终在 canvas 上屏蔽系统右键菜单 |
 
 ---
