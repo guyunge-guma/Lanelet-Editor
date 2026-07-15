@@ -137,6 +137,13 @@ async function loadPointcloud(pc: PointCloudItem) {
   }
   try {
     console.log('[Lanelet Editor] 加载点云:', pc.url)
+
+    // 移除旧点云,避免多个点云叠加
+    const oldPointClouds = [...(viewer.scene.pointclouds || [])]
+    for (const oldPc of oldPointClouds) {
+      viewer.scene.removePointCloud(oldPc)
+    }
+
     Potree.loadPointCloud(pc.url, pc.name, (e: any) => {
       if (!e) {
         ElMessage.error('点云加载失败(回调返回空)')

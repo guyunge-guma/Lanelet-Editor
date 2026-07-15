@@ -78,23 +78,29 @@ def _parse_header(f) -> dict[str, Any]:
 
 
 def _build_dtype(header: dict) -> np.dtype:
-    """根据 PCD 头部构建 numpy structured dtype"""
+    """根据 PCD 头部构建 numpy structured dtype
+
+    关键: padding 字段(名为 `_`)不能跳过!
+    如果跳过,numpy dtype 的 itemsize 会小于实际 PCD 点大小,
+    导致 frombuffer 读取错位,坐标完全错误。
+    padding 字段用唯一名 `_pad{i}` 保留在 dtype 中。
+    """
     fields = header["fields"]
     sizes = header["size"]
     types = header["type"]
     counts = header["count"]
 
     field_specs: list[tuple[str, Any]] = []
-    for name, sz, t, cnt in zip(fields, sizes, types, counts):
-        if name == "_":
-            continue  # 跳过 padding
+    for i, (name, sz, t, cnt) in enumerate(zip(fields, sizes, types, counts)):
+        # padding 字段不能跳过,用唯一名保留以保持字节对齐
+        field_name = f"_pad{i}" if name == "_" else name
         np_t = _TYPE_MAP.get((t, sz))
         if np_t is None:
             raise PcdParseError(f"不支持的字段类型: ({t}, {sz}) 字段={name}")
         dt = np.dtype(np_t)
         if cnt > 1:
             dt = np.dtype((dt, cnt))
-        field_specs.append((name, dt))
+        field_specs.append((field_name, dt))
 
     return np.dtype(field_specs)
 
@@ -123,6 +129,14 @@ def pcd_to_las(pcd_path: str | Path, las_path: str | Path) -> dict[str, Any]:
         np_dtype = _build_dtype(header)
         point_size = np_dtype.itemsize
         n_points = header["points"]
+
+        # 验证 dtype 大小与 PCD 头部声明的点大小一致
+        header_point_size = sum(s * c for s, c in zip(header["size"], header["count"]))
+        if point_size != header_point_size:
+            raise PcdParseError(
+                f"dtype 大小 {point_size} != PCD 点大小 {header_point_size},"
+                f"字段对齐可能有误"
+            )
 
         # 读取二进制数据
         f.seek(header["data_offset"])
