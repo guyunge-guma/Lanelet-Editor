@@ -262,25 +262,22 @@ export class DrawingManager {
     this.clearCurrentDrawing()
 
     // 释放共享锚点资源
-    if (this.anchorGeometry) {
-      this.anchorGeometry.dispose()
-      this.anchorGeometry = null
-    }
-    if (this.anchorMaterial) {
-      this.anchorMaterial.dispose()
-      this.anchorMaterial = null
-    }
+    // 注意:用 try-catch 包裹 dispose,因为 Potree 内部 THREE(three.module.js)
+    // 可能在我们外部 THREE(three.min.js) 创建的 geometry 上注册了 dispose 事件监听器,
+    // dispose 时会触发 Potree 的 onGeometryDispose handler,因实例不匹配而崩溃
+    this.safeDispose(this.anchorGeometry, 'anchorGeometry')
+    this.anchorGeometry = null
+    this.safeDispose(this.anchorMaterial, 'anchorMaterial')
+    this.anchorMaterial = null
 
     // 释放预览线
     if (this.previewLine) {
-      this.threeScene.remove(this.previewLine)
-      this.previewLine.geometry.dispose()
+      this.safeRemoveFromScene(this.previewLine)
+      this.safeDispose(this.previewLine.geometry, 'previewLine.geometry')
       this.previewLine = null
     }
-    if (this.previewLineMaterial) {
-      this.previewLineMaterial.dispose()
-      this.previewLineMaterial = null
-    }
+    this.safeDispose(this.previewLineMaterial, 'previewLineMaterial')
+    this.previewLineMaterial = null
     this.previewPositions = null
 
     // 恢复 Potree 相机交互
@@ -364,9 +361,9 @@ export class DrawingManager {
   removeFinishedLine(id: number): void {
     const entry = this.finishedLines.get(id)
     if (!entry) return
-    this.threeScene.remove(entry.line)
-    entry.geometry.dispose()
-    entry.material.dispose()
+    this.safeRemoveFromScene(entry.line)
+    this.safeDispose(entry.geometry, 'finishedLine.geometry')
+    this.safeDispose(entry.material, 'finishedLine.material')
     this.finishedLines.delete(id)
   }
 
@@ -514,19 +511,15 @@ export class DrawingManager {
   removeLaneletMesh(id: number): void {
     const entry = this.laneletMeshes.get(id)
     if (!entry) return
-    this.threeScene.remove(entry.mesh)
-    this.threeScene.remove(entry.arrow)
-    entry.geometry.dispose()
-    entry.material.dispose()
+    this.safeRemoveFromScene(entry.mesh)
+    this.safeRemoveFromScene(entry.arrow)
+    this.safeDispose(entry.geometry, 'lanelet.geometry')
+    this.safeDispose(entry.material, 'lanelet.material')
     // ArrowHelper 由 line(LineBasicMaterial) + cone(MeshBasicMaterial) 组成
-    try {
-      entry.arrow.line?.geometry?.dispose?.()
-      entry.arrow.line?.material?.dispose?.()
-      entry.arrow.cone?.geometry?.dispose?.()
-      entry.arrow.cone?.material?.dispose?.()
-    } catch {
-      // 忽略释放异常
-    }
+    this.safeDispose(entry.arrow?.line?.geometry, 'lanelet.arrow.line.geometry')
+    this.safeDispose(entry.arrow?.line?.material, 'lanelet.arrow.line.material')
+    this.safeDispose(entry.arrow?.cone?.geometry, 'lanelet.arrow.cone.geometry')
+    this.safeDispose(entry.arrow?.cone?.material, 'lanelet.arrow.cone.material')
     this.laneletMeshes.delete(id)
   }
 
@@ -963,6 +956,33 @@ export class DrawingManager {
   /** 获取 Potree 渲染 canvas */
   private getDomElement(): HTMLElement | null {
     return this.viewer?.renderer?.domElement ?? null
+  }
+
+  /**
+   * 安全释放 Three.js 资源(geometry / material)
+   * 用 try-catch 包裹 dispose,因为 Potree 内部 THREE(three.module.js) 可能在
+   * 我们外部 THREE(three.min.js) 创建的对象上注册了 dispose 事件监听器,
+   * 触发时因实例不匹配而抛 TypeError,但不影响后续逻辑
+   */
+  private safeDispose(obj: any, label: string): void {
+    if (!obj) return
+    try {
+      if (typeof obj.dispose === 'function') {
+        obj.dispose()
+      }
+    } catch (err) {
+      console.warn(`[DrawingManager] safeDispose(${label}) 异常:`, err)
+    }
+  }
+
+  /** 安全从场景移除对象 */
+  private safeRemoveFromScene(obj: any): void {
+    if (!obj) return
+    try {
+      this.threeScene.remove(obj)
+    } catch {
+      // 忽略
+    }
   }
 
   /**
