@@ -39,8 +39,8 @@
           </div>
           <!-- 元素子标签:LineString / Lanelet -->
           <el-radio-group v-model="elementSubTab" size="small" class="element-subtabs">
-            <el-radio-button label="linestring">LineString</el-radio-button>
-            <el-radio-button label="lanelet">Lanelet</el-radio-button>
+            <el-radio-button value="linestring">LineString</el-radio-button>
+            <el-radio-button value="lanelet">Lanelet</el-radio-button>
           </el-radio-group>
           <!-- 使用 v-show 保持两个面板挂载,避免切换时丢失本地状态 -->
           <div v-show="elementSubTab === 'linestring'">
@@ -98,7 +98,15 @@ import {
 } from '../api'
 
 const getPotree = () => (window as any).Potree
-const getTHREE = () => (window as any).THREE || (window as any).Potree?.THREE
+const getTHREE = () => {
+  // 优先用全局 window.THREE(index.html 中加载的)
+  if ((window as any).THREE) return (window as any).THREE
+  // 部分版本的 Potree 会导出 THREE
+  if ((window as any).Potree?.THREE) return (window as any).Potree.THREE
+  // Potree 1.8.x webpack 打包,THREE 在闭包内,以上都拿不到时返回 null
+  // DrawingManager 构造时会检测并报错
+  return null
+}
 
 const potreeContainer = ref<HTMLDivElement>()
 const activeTab = ref('files')
@@ -163,9 +171,36 @@ function initPotree() {
     viewer.setPointBudget(2_000_000)
     viewer.setBackground('gradient')
 
-    // 导航模式: EarthControls 支持左键平移 + 右键旋转 + 滚轮缩放
-    // 默认 OrbitControls 左键旋转,放大后无法平移只能看到一小块
-    viewer.setNavigationMode(Potree.EarthControls)
+    // 导航控制: Potree 1.8 默认左键旋转,放大后无法平移
+    // 修改 inputHandler 的鼠标按键映射: 左键平移,右键旋转,中键/滚轮缩放
+    // Potree 1.8 的 inputHandler 有 setMovementSpeed / 鼠标事件拦截
+    // 最简方案: 交换左键和右键的功能
+    if (viewer.inputHandler) {
+      // 左键改为平移(EarthControls 风格)
+      // Potree 1.8 的 inputHandler 通过 mousedrag 事件处理旋转/平移
+      // 直接设置 inputHandler 的 rotationPanSpeed 和改变鼠标映射
+      // 方法: 监听 Potree 的 inputHandler mousedrag,左键时执行平移
+      const inputHandler = viewer.inputHandler
+      // 保存原始的 mousedrag 处理器
+      const origPan = inputHandler.pan?.bind(inputHandler)
+      const origRotate = inputHandler.rotate?.bind(inputHandler)
+      // 重写: 左键平移, 右键旋转
+      if (origPan && origRotate) {
+        inputHandler.rotate = function(e: any) {
+          if (e.mouseDownLeft) {
+            origPan(e)
+          } else if (e.mouseDownRight) {
+            origRotate(e)
+          }
+        }
+        inputHandler.pan = function(e: any) {
+          // 中键仍然平移
+          if (e.mouseDownMiddle) {
+            origPan(e)
+          }
+        }
+      }
+    }
 
     viewer.loadGUI((() => {
       const toggle = document.querySelector('#potree_sidebar_container')

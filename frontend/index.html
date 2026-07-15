@@ -20,8 +20,10 @@
     <script src="/libs/other/BinaryHeap.js"></script>
     <!-- 4. TWEEN(相机动画用) -->
     <script src="/libs/tween/tween.min.js"></script>
-    <!-- 5. three.js(Potree 1.8.2 的 potree.js 不自动暴露 window.THREE,需单独加载) -->
-    <script src="/libs/three.js/three.min.js"></script>
+    <!-- 5. three.js r124 (与 Potree 1.8 内部版本一致)
+         Potree 1.8.x 的 potree.js webpack 打包了 three.js 但不暴露到 window,
+         需单独加载。用 CDN 确保 100% 可用,版本与 Potree 内部一致(r124) -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.124.0/build/three.min.js"></script>
 
     <!-- Potree 主库(从 GitHub Release 1.8.2 预构建) -->
     <script src="/potree/potree.js"></script>

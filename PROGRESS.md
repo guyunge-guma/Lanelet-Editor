@@ -131,7 +131,10 @@ FastAPI (uvicorn)
 | 26 | 切换点云多次后崩溃 `Cannot read properties of null (reading 'attributes')` | `splice` 后立即 `dispose()` 销毁了 geometry,但 Potree 渲染循环是异步的,仍在引用已销毁的对象 | 改为先 `visible=false` + `splice` 移除,延迟 500ms 后再 `dispose()`,让渲染循环自然跳过已移除的点云 |
 | 27 | `THREE 库未加载,LineString 绘制功能不可用` | Potree 1.8.2 的 `potree.js` 不自动暴露 `window.THREE`(内部用 ES module,不挂到全局) | index.html 中单独加载 `/libs/three.js/three.min.js`(在 potree.js 之前) |
 | 28 | 导出 OSM 失败: `No registered converter...Origin` | `lanelet2.write()` 第 4 个参数传了 `self.origin`,但 write 只接受 3 个参数(path, map, projector),projector 内部已包含 origin | 去掉多余的 `self.origin` 参数 |
-| 29 | 放大后无法平移,只能看到一小块 | Potree 默认 `OrbitControls` 左键旋转,不支持平移 | 改用 `viewer.setNavigationMode(Potree.EarthControls)`,左键平移 + 右键旋转 + 滚轮缩放 |
+| 29 | 放大后无法平移,只能看到一小块 | Potree 默认 `OrbitControls` 左键旋转,不支持平移 | 修改 `viewer.inputHandler` 的 `rotate`/`pan` 方法,左键平移 + 右键旋转 + 滚轮缩放(Potree 1.8.0 无 `setNavigationMode`) |
+| 30 | `three.min.js:1 Uncaught SyntaxError: Unexpected token '<'` + `THREE 库未加载` | Potree 1.8.x 的 libs 目录中 three.js 路径不确定(404 返回 HTML),且 potree.js webpack 打包不暴露 `window.THREE` | 从 CDN 加载 `three@0.124.0`(与 Potree 内部版本一致),确保 `window.THREE` 可用 |
+| 31 | `h.setNavigationMode is not a function` | Potree 1.8.0 的 Viewer 没有 `setNavigationMode` 方法(1.8.2 才有) | 改为直接操作 `viewer.inputHandler` 的 `rotate`/`pan` 方法实现左键平移 |
+| 32 | el-radio `label act as value is about to be deprecated` | Element Plus 3.0.0 的 el-radio-button 用 `label` 作为值已废弃 | 改用 `value` 属性 |
 
 ---
 
