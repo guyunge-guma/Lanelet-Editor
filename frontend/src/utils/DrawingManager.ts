@@ -636,12 +636,17 @@ export class DrawingManager {
     // 判断是否为简单点击(鼠标移动距离小于阈值,非拖拽)
     const dx = event.clientX - this.mouseDownX
     const dy = event.clientY - this.mouseDownY
-    if (Math.sqrt(dx * dx + dy * dy) > 5) return // 拖拽,忽略
+    const moveDist = Math.sqrt(dx * dx + dy * dy)
+    if (moveDist > 5) return // 拖拽,忽略
     // 简单点击:拾取点云并放置锚点
     event.stopImmediatePropagation()
     event.preventDefault()
     const point = this.pickPoint(event)
-    if (!point) return // 未命中点云,忽略
+    if (!point) {
+      console.warn('[DrawingManager] handleMouseUp: pickPoint 返回 null,未命中点云。请确认鼠标在点云可见区域内点击。')
+      return
+    }
+    console.log('[DrawingManager] handleMouseUp: 拾取到点', point.x, point.y, point.z)
     this.addPoint(point)
   }
 
@@ -749,44 +754,65 @@ export class DrawingManager {
 
   /**
    * Potree 1.8.2 点云拾取:从鼠标位置发射射线,在所有点云中找最近命中点
+   *
+   * 关键:必须传 THREE.Ray 实例给 pc.pick(),不能用普通对象。
+   * Potree 内部会调用 ray.intersectBox() 等方法,普通对象没有这些方法,
+   * 会抛 TypeError 被外层 catch 静默吞掉,导致拾取永远返回 null。
    */
   private pickPoint(event: MouseEvent): any | null {
     if (!this.viewer || !this.THREE) return null
     const pointclouds = this.viewer.scene?.pointclouds
-    if (!pointclouds || pointclouds.length === 0) return null
+    if (!pointclouds || pointclouds.length === 0) {
+      console.warn('[DrawingManager] pickPoint: 场景中无点云')
+      return null
+    }
 
     const dom = this.viewer.renderer?.domElement
-    if (!dom) return null
+    if (!dom) {
+      console.warn('[DrawingManager] pickPoint: 无法获取 renderer.domElement')
+      return null
+    }
 
     const rect = dom.getBoundingClientRect()
     const x = ((event.clientX - rect.left) / rect.width) * 2 - 1
     const y = -((event.clientY - rect.top) / rect.height) * 2 + 1
 
     const camera = this.viewer.scene.camera
-    if (!camera) return null
-
-    const mouse = new this.THREE.Vector3(x, y, 0.5)
-    mouse.unproject(camera)
-    mouse.sub(camera.position).normalize()
-
-    const ray = {
-      origin: camera.position.clone(),
-      direction: mouse,
+    if (!camera) {
+      console.warn('[DrawingManager] pickPoint: 无法获取 camera')
+      return null
     }
+
+    // 用 THREE.Raycaster 正确构建射线(处理相机矩阵,避免手动 unproject 出错)
+    const raycaster = new this.THREE.Raycaster()
+    raycaster.setFromCamera(new this.THREE.Vector2(x, y), camera)
+
+    // Potree pc.pick() 需要真正的 THREE.Ray 实例
+    const ray = new this.THREE.Ray(
+      raycaster.ray.origin.clone(),
+      raycaster.ray.direction.clone(),
+    )
 
     let closestPoint: any = null
     let closestDist = Infinity
 
     for (const pc of pointclouds) {
-      if (!pc || typeof pc.pick !== 'function') continue
+      if (!pc) continue
+      if (typeof pc.pick !== 'function') {
+        console.warn('[DrawingManager] pickPoint: 点云对象没有 pick 方法,类型:', pc.constructor?.name)
+        continue
+      }
       try {
         const result = pc.pick(this.viewer.renderer, camera, ray)
-        if (result && result.position && result.distanceToCamera < closestDist) {
-          closestDist = result.distanceToCamera
-          closestPoint = result.position.clone()
+        if (result && result.position) {
+          if (result.distanceToCamera < closestDist) {
+            closestDist = result.distanceToCamera
+            closestPoint = result.position.clone()
+          }
         }
-      } catch {
-        // 单个点云拾取异常时忽略,继续尝试其他点云
+      } catch (err) {
+        // 暴露被吞掉的错误,方便排查
+        console.error('[DrawingManager] pickPoint: pc.pick() 抛出异常:', err)
       }
     }
 
