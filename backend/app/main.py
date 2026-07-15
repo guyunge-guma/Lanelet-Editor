@@ -215,7 +215,15 @@ async def _run_convert_pipeline(task_id: str, name: str, src_ext: str) -> None:
             shutil.rmtree(tmp_out)
         tmp_out.mkdir(parents=True, exist_ok=True)
 
-        cmd = [str(converter), str(las_path), "-o", str(tmp_out)]
+        # 与 convert_pointcloud.sh 保持一致的参数
+        # --output-format LAZ: 压缩输出,体积小
+        # --attributes POSITION RGB: 只保留位置和颜色,避免无效属性导致转换异常
+        cmd = [
+            str(converter), str(las_path),
+            "-o", str(tmp_out),
+            "--output-format", "LAZ",
+            "--attributes", "POSITION", "RGB",
+        ]
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -245,6 +253,17 @@ async def _run_convert_pipeline(task_id: str, name: str, src_ext: str) -> None:
         if proc.returncode != 0:
             raise RuntimeError(
                 f"PotreeConverter 退出码 {proc.returncode}\n"
+                f"输出:\n" + "\n".join(stdout_lines[-20:])
+            )
+
+        # 验证转换结果: 检查 metadata.json 和 hierarchy.bin 是否生成
+        meta_file = tmp_out / "metadata.json"
+        hier_file = tmp_out / "hierarchy.bin"
+        if not meta_file.exists() or not hier_file.exists():
+            raise RuntimeError(
+                f"PotreeConverter 输出不完整: metadata.json={meta_file.exists()}, "
+                f"hierarchy.bin={hier_file.exists()}\n"
+                f"可能原因: libtbb 版本不匹配导致并行处理失败\n"
                 f"输出:\n" + "\n".join(stdout_lines[-20:])
             )
 

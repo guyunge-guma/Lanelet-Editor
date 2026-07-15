@@ -2,7 +2,7 @@
 
 > 基于 Potree + lanelet2 的私有化部署 Web 端 Lanelet2 矢量地图编辑器
 >
-> 最后更新: 2026-07-14
+> 最后更新: 2026-07-15
 
 ---
 
@@ -121,27 +121,43 @@ FastAPI (uvicorn)
 | 16 | `Cannot find module '../components/FileManager.vue'` | vue-tsc 2.x 在 build 模式下不识别 `*.vue` 模块声明 | build 脚本去掉 `vue-tsc -b`,改为 `vite build`;类型检查单独用 `npm run typecheck` |
 | 17 | `Element is missing end tag (FileManager.vue:65)` | `el-dropdown` 的 `#dropdown` template 写成两个 `</el-dropdown>` 闭合 | 改为 `</template></el-dropdown>` |
 | 18 | `PotreeConverter: liblaszip.so: cannot open shared object file` | 宿主机编译的 laszip 动态库装到 `/usr/local/lib`,未挂载到容器 | ① 宿主机复制 `liblaszip.so` 到 `/opt/potreeconverter/lib/` ② 后端 Dockerfile 加 `LD_LIBRARY_PATH=/opt/potreeconverter/lib` |
+| 19 | `PotreeConverter: libtbb.so.12: cannot open shared object file` | 宿主机(RHEL 10)编译 PotreeConverter 链接了系统的 `libtbb.so.12`,但容器(Debian)内无此库 | ① Dockerfile 加 `libtbb-dev` 安装 ② `build_potreeconverter.sh` 编译后自动复制 `libtbb.so.12` 到 `/opt/potreeconverter/lib/` ③ 提供 `fix_libtbb.sh` 一键修复脚本 |
+| 20 | PotreeConverter 运行成功但点位大幅丢失(从 259 万点降到几乎为空) | 手动复制的 `libtbb.so.12` 与编译时链接的版本 ABI 不兼容,TBB 并行处理静默失败,只处理极少数点 | ① 从宿主机复制**编译时链接的原始** `libtbb.so.12`(非任意版本)到 `/opt/potreeconverter/lib/` ② API 端点补齐 `--output-format LAZ --attributes POSITION RGB` 参数 ③ 转换后验证 `metadata.json` + `hierarchy.bin` 完整性 |
 
 ---
 
 ## 四、当前阻塞点
 
-### 4.1 前端 Potree 依赖加载顺序问题
-**状态**: 已定位,修复方案已出,待重新构建验证
+### 4.1 libtbb.so.12 版本不匹配导致点位丢失(已修复,待验证)
+**状态**: 修复代码已提交,待在服务器上重新构建验证
 
-`index.html` 中依赖加载顺序应为:
-1. `jquery-3.1.1.min.js` (Potree UI 依赖)
-2. `proj4.js` (坐标投影)
-3. `three.min.js` (3D 渲染)
-4. `potree.js` (主库)
-5. `main.ts` (Vue 应用)
+**问题**: PotreeConverter 在宿主机(RHEL 10)编译,链接宿主机的 `libtbb.so.12`。容器(Debian)内无此库,手动复制的版本 ABI 不兼容,导致 TBB 并行处理静默失败,259 万点只剩极少数。
 
-**验证清单**:
+**修复方案**:
+1. `build_potreeconverter.sh` 编译后自动复制 `libtbb.so.12` 到 `/opt/potreeconverter/lib/`(通过 docker-compose 挂载到容器)
+2. `fix_libtbb.sh` 一键修复脚本(无需重新编译)
+3. `main.py` PotreeConverter 命令补齐 `--output-format LAZ --attributes POSITION RGB`
+4. 转换后验证 `metadata.json` + `hierarchy.bin` 完整性
+
+**验证步骤**:
 ```bash
-# 确认所有依赖文件存在且非空
-docker exec lanelet-frontend ls /usr/share/nginx/html/libs/jquery/jquery-3.1.1.min.js
-docker exec lanelet-frontend ls /usr/share/nginx/html/libs/proj4/proj4.js
-docker exec lanelet-frontend ls /usr/share/nginx/html/libs/three.js/three.min.js
+# 1. 在宿主机上运行修复脚本(或重新编译)
+sudo ./fix_libtbb.sh
+# 或: ./build_potreeconverter.sh
+
+# 2. 重启后端容器
+docker compose restart backend
+
+# 3. 验证容器内 libtbb 正确加载
+docker exec lanelet-backend ldd /opt/potreeconverter/PotreeConverter | grep libtbb
+# 期望: libtbb.so.12 => /opt/potreeconverter/lib/libtbb.so.12
+
+# 4. 删除旧的(错误的)转换结果,重新转换
+docker exec lanelet-backend rm -rf /app/data/pointclouds/industrial_area
+# 通过前端重新上传,或手动转换
+
+# 5. 验证点位数量
+docker exec lanelet-backend cat /app/data/pointclouds/industrial_area/metadata.json | grep points
 ```
 
 ---

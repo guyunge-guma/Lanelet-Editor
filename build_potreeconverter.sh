@@ -40,16 +40,48 @@ cmake -DCMAKE_BUILD_TYPE=Release \
 make -j"$(nproc)"
 
 echo "[4/4] 安装到 $INSTALL_DIR..."
-mkdir -p "$INSTALL_DIR"
+mkdir -p "$INSTALL_DIR/lib"
 cp PotreeConverter "$INSTALL_DIR/"
 # 复制 page_template(PotreeConverter 需要这个目录)
 cp -r "$SRC_DIR/resources" "$INSTALL_DIR/" 2>/dev/null || true
 
+# ---------- 关键: 复制 libtbb.so.12 到 lib/ ----------
+# PotreeConverter 编译时链接了系统的 libtbb,但容器内没有同版本库。
+# 必须将宿主机上编译时链接的 libtbb.so.12 一并复制到 /opt/potreeconverter/lib/,
+# 通过 docker-compose 只读挂载到容器内,确保 ABI 完全匹配。
+# 否则容器内用错误版本的 libtbb 会导致并行处理静默失败,点位大幅丢失。
+echo ""
+echo "查找并复制 libtbb 动态库..."
+TBB_LIB=$(ldd "$INSTALL_DIR/PotreeConverter" | grep libtbb | awk '{print $3}')
+if [ -n "$TBB_LIB" ]; then
+    # 复制实际文件(跟随符号链接)
+    cp -L "$TBB_LIB" "$INSTALL_DIR/lib/"
+    TBB_REALNAME=$(basename "$(readlink -f "$TBB_LIB")")
+    TBB_SONAME=$(basename "$TBB_LIB")
+    # 如果复制后的文件名不是 libtbb.so.12,创建符号链接
+    if [ "$TBB_REALNAME" != "$TBB_SONAME" ]; then
+        (cd "$INSTALL_DIR/lib" && ln -sf "$TBB_REALNAME" "$TBB_SONAME")
+    fi
+    echo "  ✅ 已复制: $TBB_LIB -> $INSTALL_DIR/lib/$TBB_SONAME"
+else
+    echo "  ⚠️  警告: 未找到 libtbb 依赖,PotreeConverter 可能无法在容器中运行"
+    echo "     请确认 tbb-devel 已安装"
+fi
+
+# 同样复制 liblaszip.so(如果编译时生成了)
+if [ -f "$SRC_DIR/build/liblaszip.so" ]; then
+    cp "$SRC_DIR/build/liblaszip.so" "$INSTALL_DIR/lib/"
+    echo "  ✅ 已复制: liblaszip.so"
+fi
+
 # 验证
 echo ""
 echo "✅ PotreeConverter 安装成功"
-"$INSTALL_DIR/PotreeConverter" --help 2>&1 | head -10 || true
+echo ""
+echo "库依赖检查:"
+LD_LIBRARY_PATH="$INSTALL_DIR/lib" ldd "$INSTALL_DIR/PotreeConverter" | grep -E "libtbb|liblaszip" || true
 echo ""
 echo "可执行文件位置: $INSTALL_DIR/PotreeConverter"
+echo "动态库目录:     $INSTALL_DIR/lib/"
 echo ""
 echo "下一步: ./convert_pointcloud.sh data/raw/industrial_area.pcd industrial_area"

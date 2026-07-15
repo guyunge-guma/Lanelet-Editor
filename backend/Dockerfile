@@ -7,6 +7,10 @@ WORKDIR /app
 
 # ---------- 系统依赖安装（解决 PotreeConverter 依赖） ----------
 # 安装 libtbb-dev（提供 libtbb.so.12）及其他必要库
+# 注意: PotreeConverter 在宿主机编译,链接的是宿主机的 libtbb。
+# 宿主机的 libtbb.so.12 会通过 build_potreeconverter.sh 复制到
+# /opt/potreeconverter/lib/ 并挂载到容器,确保 ABI 完全匹配。
+# 这里安装的 libtbb-dev 仅作为 fallback。
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libtbb-dev \
     libgomp1 \
