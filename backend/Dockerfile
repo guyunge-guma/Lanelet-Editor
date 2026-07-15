@@ -5,6 +5,12 @@ LABEL maintainer="lanelet-editor"
 
 WORKDIR /app
 
+# ---------- 配置 Debian apt 国内源(阿里云) ----------
+# python:3.11-slim 基于 Debian 12 (bookworm),默认源在国外很慢
+RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null \
+    || sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list 2>/dev/null \
+    || true
+
 # ---------- 系统依赖安装 ----------
 # 注意: 故意不安装 libtbb-dev!
 # PotreeConverter 在宿主机(RHEL 10)编译,链接的是宿主机的 libtbb.so.12。
