@@ -99,12 +99,10 @@ import {
 
 const getPotree = () => (window as any).Potree
 const getTHREE = () => {
-  // 优先用全局 window.THREE(index.html 中加载的)
+  // three.js: potree.js 已在构建时打补丁,暴露内部 THREE 到 window.THREE
+  // 这样应用代码与 Potree 使用同一个 THREE 实例,消除双实例兼容性问题
   if ((window as any).THREE) return (window as any).THREE
-  // 部分版本的 Potree 会导出 THREE
   if ((window as any).Potree?.THREE) return (window as any).Potree.THREE
-  // Potree 1.8.x webpack 打包,THREE 在闭包内,以上都拿不到时返回 null
-  // DrawingManager 构造时会检测并报错
   return null
 }
 

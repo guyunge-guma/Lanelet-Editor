@@ -262,9 +262,7 @@ export class DrawingManager {
     this.clearCurrentDrawing()
 
     // 释放共享锚点资源
-    // 注意:用 try-catch 包裹 dispose,因为 Potree 内部 THREE(three.module.js)
-    // 可能在我们外部 THREE(three.min.js) 创建的 geometry 上注册了 dispose 事件监听器,
-    // dispose 时会触发 Potree 的 onGeometryDispose handler,因实例不匹配而崩溃
+    // safeDispose 用 try-catch 包裹,即使 dispose 触发异常也不中断退出流程
     this.safeDispose(this.anchorGeometry, 'anchorGeometry')
     this.anchorGeometry = null
     this.safeDispose(this.anchorMaterial, 'anchorMaterial')
@@ -960,9 +958,8 @@ export class DrawingManager {
 
   /**
    * 安全释放 Three.js 资源(geometry / material)
-   * 用 try-catch 包裹 dispose,因为 Potree 内部 THREE(three.module.js) 可能在
-   * 我们外部 THREE(three.min.js) 创建的对象上注册了 dispose 事件监听器,
-   * 触发时因实例不匹配而抛 TypeError,但不影响后续逻辑
+   * 用 try-catch 包裹 dispose,防止异常中断退出流程
+   * (历史遗留:曾因双 THREE 实例导致 dispose 事件 handler 崩溃,现已统一为单实例)
    */
   private safeDispose(obj: any, label: string): void {
     if (!obj) return
