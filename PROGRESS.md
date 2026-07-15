@@ -124,8 +124,10 @@ FastAPI (uvicorn)
 | 19 | `PotreeConverter: libtbb.so.12: cannot open shared object file` | 宿主机(RHEL 10)编译 PotreeConverter 链接了系统的 `libtbb.so.12`,但容器(Debian)内无此库 | ① `build_potreeconverter.sh` 编译后自动复制 `libtbb.so.12` 到 `/opt/potreeconverter/lib/` ② 提供 `fix_libtbb.sh` 一键修复脚本 ③ Dockerfile 移除 `libtbb-dev`(避免 Debian 版干扰) |
 | 20 | `fix_libtbb.sh` 复制后 libtbb.so.12 变成坏链接 | `cp -L` 正确复制了真实文件,但随后 `ln -sf libtbb.so.12.11 libtbb.so.12` 把真实文件替换成了指向不存在文件的符号链接 | 修复脚本:直接 `cp -L` 保存为 SONAME,不再创建符号链接;验证是否为真实文件 |
 | 21 | PotreeConverter 运行成功但点位大幅丢失(259 万点降到几乎为空) | **最终确认:不是 libtbb 问题**。真正原因是后端 `pcd2las.py` 的 `_build_dtype` 跳过了 padding 字段(`_`),导致 dtype itemsize(80) < 实际点大小(120),`frombuffer` 读取错位,X/Y/Z 全部读到错误字段的值 | 修复 `pcd2las.py`:padding 字段用 `_pad{i}` 保留在 dtype 中,不再跳过;添加 dtype itemsize 与 PCD 头部点大小的一致性校验 |
-| 22 | 多个点云叠加显示,加载新的不删除旧的 | `MapView.vue` 的 `loadPointcloud` 只做 `addPointCloud`,不清理旧点云 | 加载新点云前遍历 `viewer.scene.pointclouds` 逐一 `removePointCloud` |
+| 22 | 多个点云叠加显示,加载新的不删除旧的 | `MapView.vue` 的 `loadPointcloud` 只做 `addPointCloud`,不清理旧点云 | 加载新点云前遍历 `viewer.scene.pointclouds`,用 `splice` 移除 + `dispose()` 释放资源(见 Issue #24) |
 | 23 | 已上传文件无法手动重新转换,必须重新上传 | 后端无手动转换 API | 新增 `POST /api/pointclouds/{name}/convert` 接口;前端 FileManager 未转换文件显示「转换」按钮,下拉菜单加「重新转换」 |
+| 24 | `c.scene.removePointCloud is not a function` | Potree 1.8.2 的 `scene` 对象不提供 `removePointCloud` 方法 | 改用 `scene.pointclouds.splice()` 手动从数组移除 + `geometry.dispose()` / `material.dispose()` 释放 GPU 资源 |
+| 25 | 后端 Docker 构建时 apt 下载慢(196 秒) | Dockerfile 未配置国内 apt 源,默认走 `deb.debian.org` | 添加 `sed` 替换为 `mirrors.aliyun.com`,兼容 Debian 12 deb822 和传统 sources.list 两种格式 |
 
 ---
 
