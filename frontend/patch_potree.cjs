@@ -137,22 +137,20 @@ const threeNames = [
   'DataUtils', 'ImageUtils', 'ShapeUtils', 'PMREMGenerator', 'WebGLUtils',
 ]
 
-// 注入代码: 用 eval 安全地从闭包中收集所有 THREE.js 变量
-// eval 在 strict mode 下可以读取闭包变量,只是不能创建新变量
+// 注入代码: 用 eval 从 UMD 闭包作用域中收集所有 THREE.js 变量
+// 关键: eval 必须直接在 UMD 闭包作用域中调用,不能包在嵌套函数里,
+// 否则无法访问外层闭包的局部变量(class 声明)
 const injection = `
 	// ===== patch_potree.cjs 注入: 暴露 Potree 内部 THREE 到 exports.THREE =====
-	exports.THREE = (function() {
-		var three = {};
-		var names = ${JSON.stringify(threeNames)};
-		for (var i = 0; i < names.length; i++) {
-			try {
-				three[names[i]] = eval(names[i]);
-			} catch(e) {
-				// 变量在闭包中不存在,跳过
-			}
+	exports.THREE = {};
+	var __threeNames = ${JSON.stringify(threeNames)};
+	for (var __i = 0; __i < __threeNames.length; __i++) {
+		try {
+			exports.THREE[__threeNames[__i]] = eval(__threeNames[__i]);
+		} catch(e) {
+			// 变量在闭包中不存在,跳过
 		}
-		return three;
-	})();
+	}
 	// ===== patch_potree.cjs 注入结束 =====`
 
 // 找到注入位置: Object.defineProperty(exports, '__esModule', { value: true });
