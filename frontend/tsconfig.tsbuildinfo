@@ -1,0 +1,1 @@
+{"root":["./src/env.d.ts","./src/main.ts","./src/api/index.ts","./src/utils/drawingmanager.ts","./src/app.vue","./src/components/filemanager.vue","./src/components/linestringpanel.vue","./src/views/mapview.vue"],"errors":true,"version":"5.9.3"}

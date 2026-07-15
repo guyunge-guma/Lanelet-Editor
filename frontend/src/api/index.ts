@@ -132,6 +132,55 @@ export async function listLanelets() {
   return data.items
 }
 
+// ---------------- LineString 扩展 CRUD ----------------
+
+/** LineString 完整数据(含坐标与属性) */
+export interface LineStringItem {
+  id: number
+  coords: number[]
+  attrs: Record<string, string>
+}
+
+/** 更新指定 LineString 的坐标 / 属性 */
+export async function updateLinestring(
+  id: number,
+  coords: number[],
+  attrs?: Record<string, string>,
+) {
+  const { data } = await http.put(`/linestrings/${id}`, { coords, attrs })
+  return data
+}
+
+/** 删除指定 LineString */
+export async function deleteLinestring(id: number) {
+  const { data } = await http.delete(`/linestrings/${id}`)
+  return data
+}
+
+/** 获取单条 LineString */
+export async function getLinestring(id: number): Promise<LineStringItem> {
+  const { data } = await http.get(`/linestrings/${id}`)
+  return data
+}
+
+/** 保存当前地图到 JSON 文件(默认后端路径) */
+export async function saveMap(path?: string) {
+  const { data } = await http.post('/linestrings/save', { path })
+  return data
+}
+
+/** 从 JSON 文件加载地图(默认后端路径) */
+export async function loadMap(path?: string) {
+  const { data } = await http.post('/linestrings/load', { path })
+  return data
+}
+
+/** 清空所有 LineString */
+export async function clearLinestrings() {
+  const { data } = await http.delete('/linestrings')
+  return data
+}
+
 // 导出 OSM
 export async function exportOsm(path = '/app/data/output.osm') {
   const { data } = await http.post('/export', null, { params: { path } })

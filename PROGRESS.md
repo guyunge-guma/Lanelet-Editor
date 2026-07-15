@@ -259,37 +259,49 @@ docker exec lanelet-backend cat /app/data/pointclouds/industrial_area/metadata.j
 
 ---
 
-### 第 3 轮: 点云拾取 + LineString 画线 + 车道线/马路沿
+### 第 3 轮: 点云拾取 + LineString 画线 + 车道线/马路沿 ✅
 
 **目标**: 在点云上画各类线元素(车道线、马路沿、虚拟线等)
 
 #### 前端
-- [ ] Potree 点云拾取(射线检测 + 点命中)
-- [ ] LineString 绘制管理器(Three.js Line + BufferGeometry)
-  - 点击添加锚点
-  - 实时预览折线
-  - 撤销/重做
-  - 完成/取消
-- [ ] LineString 类型选择面板:
+- [x] Potree 点云拾取(射线检测 + 点命中) — `DrawingManager.ts` 的 `pickPoint` 方法
+- [x] LineString 绘制管理器(Three.js Line + BufferGeometry) — `DrawingManager.ts`
+  - 点击添加锚点(红色球体)
+  - 实时预览折线(绿色虚线)
+  - 撤销(右键/Ctrl+Z)/完成(双击/Enter)/取消(Esc)
+- [x] LineString 类型选择面板 — `LineStringPanel.vue`
   - `line_thin` / `line_thick` (细/粗车道线)
-  - `dashed` / `solid` (虚线/实线)
-  - `curbstone` (马路沿)
+  - `dashed` / `solid` / `dotted` (虚线/实线/点线)
+  - `curbstone` (马路沿: low/high)
   - `virtual` (虚拟线)
   - `road_border` (路缘)
-- [ ] LineString 列表面板(显示已绘制线条,可编辑/删除)
-- [ ] 鼠标坐标实时显示(右下角状态栏)
+- [x] LineString 列表面板(显示已绘制线条,可删除/清空)
+- [x] 鼠标坐标实时显示(右下角状态栏)
 
 #### 后端
-- [ ] `POST /api/linestrings` — 创建 LineString(传 coords + type/subtype,返回 id)
-- [ ] `GET /api/linestrings` — 列出所有 LineString(含 type/subtype/coords)
-- [ ] `PUT /api/linestrings/{id}` — 更新坐标或属性
-- [ ] `DELETE /api/linestrings/{id}` — 删除
-- [ ] lanelet2 `LineString3d` 持久化到内存 + JSON 文件
+- [x] `POST /api/linestrings` — 创建 LineString(传 coords + type/subtype,返回 id)
+- [x] `GET /api/linestrings` — 列出所有 LineString(含 type/subtype/coords)
+- [x] `GET /api/linestrings/{id}` — 获取单条 LineString
+- [x] `PUT /api/linestrings/{id}` — 更新坐标或属性(删除旧的+创建新的,返回新 id)
+- [x] `DELETE /api/linestrings/{id}` — 删除(被 Lanelet 引用时拒绝)
+- [x] `DELETE /api/linestrings` — 清空所有 LineString
+- [x] `POST /api/linestrings/save` — 保存到 JSON 文件
+- [x] `POST /api/linestrings/load` — 从 JSON 文件加载
+- [x] `GET /api/map/health` — 检查 lanelet2 和当前 map 状态
+- [x] lanelet2 `LineString3d` 持久化到内存 + JSON 文件
+
+#### 新增文件
+- `frontend/src/utils/DrawingManager.ts` — Potree 点云拾取 + Three.js 线段绘制管理器
+- `frontend/src/components/LineStringPanel.vue` — LineString 绘制面板(类型选择/绘制控制/线段列表/颜色图例)
 
 #### 交付物
-- 前端能拾取点云坐标
-- 能画多种类型 LineString 并提交到后端
-- 支持车道线、马路沿等不同线型
+- 前端能拾取点云坐标(射线检测,Potree `pc.pick()`)
+- 能画多种类型 LineString 并提交到后端(前端内部 id ↔ 后端 id 映射)
+- 支持车道线、马路沿等不同线型(5 种类型 + 各自子类型)
+- 绘制模式禁用 Potree 相机交互,非绘制模式恢复
+- 鼠标悬停实时显示点云坐标(节流 40ms)
+- 颜色图例(蓝/橙/灰/红)
+- 地图可保存/加载 JSON 文件
 
 ---
 

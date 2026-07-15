@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     # 原始上传文件目录
     raw_dir: Path = Path("/app/data/raw")
 
+    # Lanelet2 地图 JSON 持久化文件默认路径
+    map_file: Path = Path("/app/data/map.json")
+
     # PotreeConverter 可执行文件路径(宿主机编译后挂载)
     potreeconverter_path: str = "/opt/potreeconverter/PotreeConverter"
 

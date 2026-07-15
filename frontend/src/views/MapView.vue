@@ -30,9 +30,14 @@
           <el-empty v-if="!pointclouds.length" description="暂无就绪点云" :image-size="40" />
         </el-tab-pane>
 
-        <!-- Lanelet2 元素(第 3 轮使用) -->
+        <!-- Lanelet2 元素:LineString 绘制 -->
         <el-tab-pane label="元素" name="elements">
-          <p class="hint">画线/车道功能将在第 3 轮实现</p>
+          <div class="elements-toolbar">
+            <el-button size="small" @click="handleExportOsm" :loading="exporting">
+              导出 OSM
+            </el-button>
+          </div>
+          <LineStringPanel @line-finished="onLineFinished" @line-deleted="onLineDeleted" />
         </el-tab-pane>
       </el-tabs>
     </aside>
@@ -48,31 +53,50 @@
         <span v-if="mousePos">{{ mousePos.x.toFixed(2) }}, {{ mousePos.y.toFixed(2) }}, {{ mousePos.z.toFixed(2) }}</span>
         <span v-else>-</span>
       </div>
+      <div class="status-row">
+        <span>线段:</span>
+        <span>{{ lineIdMap.size }} 条已保存</span>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref } from 'vue'
+import { onMounted, onBeforeUnmount, ref, provide, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Files } from '@element-plus/icons-vue'
 import FileManager from '../components/FileManager.vue'
+import LineStringPanel from '../components/LineStringPanel.vue'
+import { DrawingManager, type MousePos } from '../utils/DrawingManager'
 import {
   listPointclouds,
+  createLinestring,
+  deleteLinestring,
+  exportOsm,
   type PointCloudItem,
 } from '../api'
 
 const getPotree = () => (window as any).Potree
+const getTHREE = () => (window as any).THREE || (window as any).Potree?.THREE
 
 const potreeContainer = ref<HTMLDivElement>()
 const activeTab = ref('files')
 const pointclouds = ref<PointCloudItem[]>([])
 const loading = ref(false)
 const currentPointcloud = ref('')
-const mousePos = ref<{ x: number; y: number; z: number } | null>(null)
+const mousePos = ref<MousePos | null>(null)
 const initError = ref('')
+const exporting = ref(false)
 
 let viewer: any = null
+
+// DrawingManager 通过 provide 传给 LineStringPanel(响应式 ref,初始为 null,
+// Potree 初始化完成后赋值)
+const drawingManagerRef = ref<DrawingManager | null>(null)
+provide('drawingManager', drawingManagerRef)
+
+// 前端内部线段 id -> 后端 LineString id 的映射
+const lineIdMap = new Map<number, number>()
 
 function initPotree() {
   initError.value = ''
@@ -105,6 +129,19 @@ function initPotree() {
       if (toggle) (toggle as HTMLElement).style.display = 'none'
     }))
     console.log('[Lanelet Editor] Potree Viewer 初始化成功')
+
+    // 初始化绘制管理器
+    const THREE = getTHREE()
+    if (!THREE) {
+      ElMessage.warning('THREE 库未加载,LineString 绘制功能不可用')
+    } else {
+      drawingManagerRef.value = new DrawingManager(viewer, THREE)
+      // 实时鼠标坐标显示(绘制/非绘制模式下均生效)
+      drawingManagerRef.value.onMouseMove = (pos: MousePos | null) => {
+        mousePos.value = pos
+      }
+      console.log('[Lanelet Editor] DrawingManager 初始化成功')
+    }
   } catch (err) {
     initError.value = 'Potree 初始化异常: ' + (err as Error).message
     ElMessage.error(initError.value)
@@ -170,6 +207,8 @@ async function loadPointcloud(pc: PointCloudItem) {
       viewer.scene.addPointCloud(e.pointcloud)
       viewer.fitToScreen()
       currentPointcloud.value = pc.name
+      // 通知绘制管理器点云已变更(重置悬停坐标等)
+      drawingManagerRef.value?.notifyPointcloudChanged()
       ElMessage.success(`已加载 ${pc.name}`)
     })
   } catch (err) {
@@ -189,12 +228,64 @@ async function refreshPointclouds() {
   }
 }
 
+// ---------------- LineStringPanel 事件处理 ----------------
+
+/** 线段绘制完成:持久化到后端,建立内部 id -> 后端 id 映射 */
+async function onLineFinished(coords: number[], type: string, subtype: string, internalId: number) {
+  try {
+    const res = await createLinestring(coords, { type, subtype })
+    if (res?.id !== undefined) {
+      lineIdMap.set(internalId, res.id)
+      ElMessage.success(`线段已保存(后端 id: ${res.id})`)
+    }
+  } catch (e: any) {
+    // 后端可能未安装 lanelet2 或接口异常,线段仍保留在前端
+    console.warn('[Lanelet Editor] 线段保存后端失败:', e)
+    ElMessage.warning('线段保存到后端失败,仅保留在前端')
+  }
+}
+
+/** 线段删除:同步删除后端数据 */
+async function onLineDeleted(internalId: number) {
+  const backendId = lineIdMap.get(internalId)
+  lineIdMap.delete(internalId)
+  if (backendId === undefined) return
+  try {
+    await deleteLinestring(backendId)
+  } catch (e) {
+    // 后端可能暂不支持删除接口,前端已删除,忽略
+    console.warn('[Lanelet Editor] 后端删除线段失败:', e)
+  }
+}
+
+/** 导出 OSM */
+async function handleExportOsm() {
+  exporting.value = true
+  try {
+    const res = await exportOsm()
+    ElMessage.success(`已导出: ${res?.path ?? ''}`)
+  } catch (e: any) {
+    ElMessage.error('导出失败: ' + (e?.response?.data?.detail || e?.message || ''))
+  } finally {
+    exporting.value = false
+  }
+}
+
+// 切换离开"元素"标签时退出绘制模式,避免事件残留
+watch(activeTab, (tab) => {
+  if (tab !== 'elements') {
+    drawingManagerRef.value?.stopDrawing()
+  }
+})
+
 onMounted(async () => {
   initPotree()
   await refreshPointclouds()
 })
 
 onBeforeUnmount(() => {
+  drawingManagerRef.value?.dispose()
+  drawingManagerRef.value = null
   if (viewer?.renderer) {
     viewer.renderer.dispose()
   }
@@ -248,6 +339,10 @@ onBeforeUnmount(() => {
   text-align: center;
   z-index: 10;
   max-width: 400px;
+}
+
+.elements-toolbar {
+  margin-bottom: 8px;
 }
 
 .status-panel {

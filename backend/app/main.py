@@ -534,6 +534,29 @@ class LaneletReq(BaseModel):
     attrs: dict[str, str] | None = None
 
 
+class MapFileReq(BaseModel):
+    path: str | None = None        # 为 None 时使用 settings.map_file 默认路径
+
+
+def _is_safe_path(path: str, must_suffix: str = ".json") -> bool:
+    """文件路径安全检查: 不允许路径穿越,且必须在 data_dir 内,扩展名匹配"""
+    if not path:
+        return False
+    if ".." in path:
+        return False
+    p = Path(path)
+    if must_suffix and p.suffix != must_suffix:
+        return False
+    try:
+        resolved = p.resolve()
+        data_dir = settings.data_dir.resolve()
+        # 确保路径在 data_dir 目录内
+        resolved.relative_to(data_dir)
+        return True
+    except (ValueError, OSError):
+        return False
+
+
 @app.post("/api/linestrings")
 def create_linestring(req: LineStringReq) -> dict[str, Any]:
     try:
@@ -548,6 +571,86 @@ def get_linestrings() -> dict[str, Any]:
     return {"items": ll_service.list_linestrings()}
 
 
+@app.get("/api/linestrings/{ls_id}")
+def get_linestring(ls_id: int) -> dict[str, Any]:
+    """获取单个 LineString"""
+    ls = ll_service.get_linestring(ls_id)
+    if ls is None:
+        raise HTTPException(404, f"LineString {ls_id} 不存在")
+    return ls
+
+
+@app.put("/api/linestrings/{ls_id}")
+def update_linestring(ls_id: int, req: LineStringReq) -> dict[str, Any]:
+    """更新 LineString 的坐标和属性
+
+    由于 lanelet2 ID 固定,更新会删除旧的并创建新的,返回新 ID。
+    """
+    try:
+        new_id = ll_service.update_linestring(ls_id, req.coords, req.attrs)
+        return {"old_id": ls_id, "id": new_id}
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.delete("/api/linestrings/{ls_id}")
+def delete_linestring(ls_id: int) -> dict[str, Any]:
+    """删除单个 LineString"""
+    try:
+        deleted = ll_service.delete_linestring(ls_id)
+        if not deleted:
+            raise HTTPException(404, f"LineString {ls_id} 不存在")
+        return {"deleted": ls_id}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.delete("/api/linestrings")
+def clear_linestrings() -> dict[str, Any]:
+    """清空所有 LineString 和 Lanelet"""
+    try:
+        count = ll_service.clear()
+        return {"cleared": count}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/linestrings/save")
+def save_linestrings(req: MapFileReq) -> dict[str, Any]:
+    """将当前 map 的所有 LineString / Lanelet 保存到 JSON 文件"""
+    path = req.path or str(settings.map_file)
+    if not _is_safe_path(path):
+        raise HTTPException(400, f"非法路径(必须在 data_dir 内且为 .json 文件): {path}")
+    try:
+        saved = ll_service.save_to_file(path)
+        return {"path": saved}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/linestrings/load")
+def load_linestrings(req: MapFileReq) -> dict[str, Any]:
+    """从 JSON 文件加载 LineString / Lanelet(会清空当前 map)"""
+    path = req.path or str(settings.map_file)
+    if not _is_safe_path(path):
+        raise HTTPException(400, f"非法路径(必须在 data_dir 内且为 .json 文件): {path}")
+    try:
+        result = ll_service.load_from_file(path)
+        return {"path": path, **result}
+    except FileNotFoundError:
+        raise HTTPException(404, f"文件不存在: {path}")
+    except json.JSONDecodeError as e:
+        raise HTTPException(400, f"JSON 解析失败: {e}")
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
 @app.post("/api/lanelets")
 def create_lanelet(req: LaneletReq) -> dict[str, Any]:
     try:
@@ -560,6 +663,20 @@ def create_lanelet(req: LaneletReq) -> dict[str, Any]:
 @app.get("/api/lanelets")
 def get_lanelets() -> dict[str, Any]:
     return {"items": ll_service.list_lanelets()}
+
+
+@app.get("/api/map/health")
+def map_health() -> dict[str, Any]:
+    """检查 lanelet2 和当前 map 状态"""
+    linestrings = ll_service.list_linestrings()
+    lanelets = ll_service.list_lanelets()
+    return {
+        "lanelet2_available": ll_service.is_available(),
+        "linestring_count": len(linestrings),
+        "lanelet_count": len(lanelets),
+        "origin": {"lat": ll_service.origin_lat, "lon": ll_service.origin_lon},
+        "map_file": str(settings.map_file),
+    }
 
 
 @app.post("/api/export")
