@@ -60,11 +60,21 @@
           >
             加载
           </el-button>
+          <el-button
+            v-if="!f.converted"
+            size="small"
+            link
+            type="warning"
+            @click="handleConvert(f)"
+          >
+            转换
+          </el-button>
           <el-dropdown trigger="click" @command="(cmd: string) => handleAction(cmd, f)">
             <el-icon class="more-btn"><MoreFilled /></el-icon>
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item command="load" v-if="f.converted">加载到视图</el-dropdown-item>
+                <el-dropdown-item command="convert" v-if="!f.converted">重新转换</el-dropdown-item>
                 <el-dropdown-item command="download-pcd" v-if="hasExt(f, 'pcd')">
                   下载 PCD
                 </el-dropdown-item>
@@ -92,6 +102,7 @@ import { CircleCheckFilled, Clock, MoreFilled } from '@element-plus/icons-vue'
 import {
   listFiles,
   uploadPointcloud,
+  convertPointcloud,
   deletePointcloud,
   renamePointcloud,
   downloadUrl,
@@ -222,6 +233,20 @@ function startProgressSubscription(name: string) {
   }, 10 * 60 * 1000)
 }
 
+async function handleConvert(f: FileItem) {
+  if (converting.value) {
+    ElMessage.warning('当前已有转换任务在进行')
+    return
+  }
+  try {
+    const res = await convertPointcloud(f.name)
+    ElMessage.success(`开始转换 ${f.name}`)
+    startProgressSubscription(res.name)
+  } catch (e: any) {
+    ElMessage.error('转换失败: ' + (e?.response?.data?.detail || e?.message || ''))
+  }
+}
+
 function cleanupSubscription() {
   if (eventSource) {
     eventSource.close()
@@ -236,6 +261,10 @@ function cleanupSubscription() {
 async function handleAction(cmd: string, f: FileItem) {
   if (cmd === 'load') {
     emit('load', f.name)
+    return
+  }
+  if (cmd === 'convert') {
+    handleConvert(f)
     return
   }
   if (cmd === 'download-pcd') {

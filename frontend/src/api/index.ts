@@ -74,6 +74,12 @@ export async function getConvertStatus(name: string): Promise<ConvertStatus> {
   return data
 }
 
+// 手动触发转换(无需重新上传)
+export async function convertPointcloud(name: string): Promise<{ task_id: string; name: string; message: string }> {
+  const { data } = await http.post(`/pointclouds/${name}/convert`)
+  return data
+}
+
 // SSE 订阅转换进度(返回 EventSource,调用方负责关闭)
 export function subscribeProgress(name: string, onMessage: (s: ConvertStatus) => void): EventSource {
   const es = new EventSource(`/api/pointclouds/${name}/progress`)

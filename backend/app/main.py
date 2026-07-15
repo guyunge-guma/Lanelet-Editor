@@ -285,6 +285,55 @@ async def _run_convert_pipeline(task_id: str, name: str, src_ext: str) -> None:
 
 # ---------------- 转换状态 ----------------
 
+# ---------------- 手动触发转换 ----------------
+
+@app.post("/api/pointclouds/{name}/convert")
+async def convert_pointcloud(name: str) -> dict[str, Any]:
+    """手动触发已上传文件的转换(无需重新上传)
+
+    适用于:
+    - 上传时未自动转换(auto_convert=false)
+    - 转换失败后重试
+    - PotreeConverter 修复后重新转换
+    """
+    if not _is_safe_name(name):
+        raise HTTPException(400, "非法名称")
+
+    raw_dir = settings.raw_dir
+    pc_dir = settings.pointcloud_dir
+
+    # 查找原始文件(pcd/las/laz/ply)
+    src_ext = None
+    for ext in (".pcd", ".las", ".laz", ".ply"):
+        if (raw_dir / f"{name}{ext}").exists():
+            src_ext = ext
+            break
+
+    if src_ext is None:
+        raise HTTPException(404, f"未找到原始文件: {name}")
+
+    # 删除旧的转换结果(如果有)
+    pc_old = pc_dir / name
+    if pc_old.exists():
+        shutil.rmtree(pc_old)
+
+    # 创建转换任务
+    task_id = str(uuid.uuid4())[:8]
+    _tasks[task_id] = {
+        "status": "pending",
+        "stage": "queued",
+        "progress": 0,
+        "message": "手动触发转换",
+        "name": name,
+        "created_at": time.time(),
+    }
+
+    # 后台启动转换
+    asyncio.create_task(_run_convert_pipeline(task_id, name, src_ext))
+
+    return {"task_id": task_id, "name": name, "message": "转换已启动"}
+
+
 @app.get("/api/pointclouds/{name}/status")
 def get_status(name: str) -> dict[str, Any]:
     """查询点云转换状态(从最近一次转换任务中查)"""
