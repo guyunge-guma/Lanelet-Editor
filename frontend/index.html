@@ -22,8 +22,37 @@
     <script src="/libs/tween/tween.min.js"></script>
     <!-- 5. three.js r124 (与 Potree 1.8 内部版本一致)
          Potree 1.8.x 的 potree.js webpack 打包了 three.js 但不暴露到 window,
-         需单独加载。用 CDN 确保 100% 可用,版本与 Potree 内部一致(r124) -->
-    <script src="https://cdn.jsdelivr.net/npm/three@0.124.0/build/three.min.js"></script>
+         需单独加载。先尝试 CDN,失败则尝试本地 Potree libs 目录 -->
+    <script>
+      // 动态加载 three.js,优先 CDN,失败则尝试本地路径
+      (function() {
+        var paths = [
+          'https://cdn.jsdelivr.net/npm/three@0.124.0/build/three.min.js',
+          '/libs/three.js/build/three.min.js',
+          '/libs/three.js/three.min.js',
+          '/potree/libs/three.js/build/three.min.js',
+        ];
+        var idx = 0;
+        function tryLoad() {
+          if (idx >= paths.length) {
+            console.error('[Lanelet Editor] 所有 three.js 加载路径均失败');
+            return;
+          }
+          var s = document.createElement('script');
+          s.src = paths[idx];
+          s.onload = function() {
+            console.log('[Lanelet Editor] three.js 加载成功:', paths[idx]);
+          };
+          s.onerror = function() {
+            console.warn('[Lanelet Editor] three.js 加载失败:', paths[idx]);
+            idx++;
+            tryLoad();
+          };
+          document.head.appendChild(s);
+        }
+        tryLoad();
+      })();
+    </script>
 
     <!-- Potree 主库(从 GitHub Release 1.8.2 预构建) -->
     <script src="/potree/potree.js"></script>

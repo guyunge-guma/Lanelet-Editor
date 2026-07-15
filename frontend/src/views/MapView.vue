@@ -171,36 +171,9 @@ function initPotree() {
     viewer.setPointBudget(2_000_000)
     viewer.setBackground('gradient')
 
-    // 导航控制: Potree 1.8 默认左键旋转,放大后无法平移
-    // 修改 inputHandler 的鼠标按键映射: 左键平移,右键旋转,中键/滚轮缩放
-    // Potree 1.8 的 inputHandler 有 setMovementSpeed / 鼠标事件拦截
-    // 最简方案: 交换左键和右键的功能
-    if (viewer.inputHandler) {
-      // 左键改为平移(EarthControls 风格)
-      // Potree 1.8 的 inputHandler 通过 mousedrag 事件处理旋转/平移
-      // 直接设置 inputHandler 的 rotationPanSpeed 和改变鼠标映射
-      // 方法: 监听 Potree 的 inputHandler mousedrag,左键时执行平移
-      const inputHandler = viewer.inputHandler
-      // 保存原始的 mousedrag 处理器
-      const origPan = inputHandler.pan?.bind(inputHandler)
-      const origRotate = inputHandler.rotate?.bind(inputHandler)
-      // 重写: 左键平移, 右键旋转
-      if (origPan && origRotate) {
-        inputHandler.rotate = function(e: any) {
-          if (e.mouseDownLeft) {
-            origPan(e)
-          } else if (e.mouseDownRight) {
-            origRotate(e)
-          }
-        }
-        inputHandler.pan = function(e: any) {
-          // 中键仍然平移
-          if (e.mouseDownMiddle) {
-            origPan(e)
-          }
-        }
-      }
-    }
+    // Potree 1.8 默认导航: 左键旋转, 右键平移, 滚轮缩放
+    // 绘制模式下 DrawingManager 会拦截左键 click 放置锚点,
+    // 右键拖拽平移和滚轮缩放保持可用
 
     viewer.loadGUI((() => {
       const toggle = document.querySelector('#potree_sidebar_container')
@@ -212,10 +185,18 @@ function initPotree() {
     viewerRef.value = viewer
 
     // 初始化绘制管理器
-    const THREE = getTHREE()
-    if (!THREE) {
-      ElMessage.warning('THREE 库未加载,LineString 绘制功能不可用')
-    } else {
+    // three.js 可能还在异步加载中,等待最多 3 秒
+    const initDrawing = (retry = 0) => {
+      const THREE = getTHREE()
+      if (!THREE) {
+        if (retry < 30) {
+          setTimeout(() => initDrawing(retry + 1), 100)
+        } else {
+          ElMessage.warning('THREE 库未加载,LineString 绘制功能不可用')
+          console.error('[Lanelet Editor] THREE 加载超时,DrawingManager 未初始化')
+        }
+        return
+      }
       drawingManagerRef.value = new DrawingManager(viewer, THREE)
       // 实时鼠标坐标显示(绘制/非绘制模式下均生效)
       drawingManagerRef.value.onMouseMove = (pos: MousePos | null) => {
@@ -223,6 +204,7 @@ function initPotree() {
       }
       console.log('[Lanelet Editor] DrawingManager 初始化成功')
     }
+    initDrawing()
   } catch (err) {
     initError.value = 'Potree 初始化异常: ' + (err as Error).message
     ElMessage.error(initError.value)

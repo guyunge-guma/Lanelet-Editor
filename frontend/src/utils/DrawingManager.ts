@@ -587,15 +587,17 @@ export class DrawingManager {
     const now = performance.now()
 
     if (this.isDrawing) {
-      // 绘制模式:更新预览线末端 + 阻止 Potree 相机交互
+      // 绘制模式:更新预览线末端,但不阻止 Potree 相机交互
+      // 用户可以用右键旋转、中键平移、滚轮缩放
+      if (now - this.lastHoverTime < HOVER_THROTTLE_MS) return
+      this.lastHoverTime = now
       const point = this.pickPoint(event)
       if (point) {
         this.currentMousePos = point
         this.onMouseMove?.({ x: point.x, y: point.y, z: point.z })
       }
       this.updatePreview()
-      event.stopImmediatePropagation()
-      event.preventDefault()
+      // 不调用 stopImmediatePropagation,让 Potree 的导航事件正常工作
     } else {
       // 非绘制模式:仅悬停拾取(节流),不阻止冒泡,Potree 正常交互
       if (now - this.lastHoverTime < HOVER_THROTTLE_MS) return
@@ -607,13 +609,14 @@ export class DrawingManager {
 
   private handleClick(event: MouseEvent): void {
     if (!this.isDrawing) return
-    // 只响应左键
+    // 只响应左键单击(用于放置锚点)
     if (event.button !== 0) return
-    event.stopImmediatePropagation()
-    event.preventDefault()
-
+    // 不阻止冒泡 — Potree 的 click 通常不会干扰(拖拽是 mousedown+mousemove)
+    // 只在确实命中点云时阻止默认行为
     const point = this.pickPoint(event)
     if (!point) return // 未命中任何点云,忽略
+    event.stopImmediatePropagation()
+    event.preventDefault()
     this.addPoint(point)
   }
 
@@ -627,6 +630,7 @@ export class DrawingManager {
   private handleContextMenu(event: MouseEvent): void {
     if (!this.isDrawing) return
     // 右键:撤销最后一个点(并屏蔽系统右键菜单)
+    // 注意:右键拖拽旋转仍然可用(因为 contextmenu 只在右键松开时触发,不影响拖拽)
     event.stopImmediatePropagation()
     event.preventDefault()
     this.undoLastPoint()
@@ -809,13 +813,19 @@ export class DrawingManager {
     return total
   }
 
-  /** 禁用 Potree 默认相机交互 */
+  /** 禁用 Potree 默认相机交互(仅左键,保留右键旋转和中键/滚轮缩放) */
   private disablePotreeNavigation(): void {
+    // 不完全禁用 inputHandler,只拦截左键 click 用于画点
+    // 右键拖拽旋转、中键拖拽平移、滚轮缩放保持可用
+    // 这样用户在绘制过程中仍可移动视角
     try {
       const ih = this.viewer.inputHandler
       if (ih) {
+        // 记录原始状态
         this.prevInputEnabled = ih.enabled
-        ih.enabled = false
+        // Potree 1.8 的 inputHandler 没有单独的左键禁用,
+        // 我们在 click 事件捕获阶段拦截左键即可(已在 handleClick 中处理)
+        // 这里不禁用 inputHandler,保持导航可用
       }
     } catch {
       // 忽略

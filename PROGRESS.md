@@ -135,6 +135,8 @@ FastAPI (uvicorn)
 | 30 | `three.min.js:1 Uncaught SyntaxError: Unexpected token '<'` + `THREE 库未加载` | Potree 1.8.x 的 libs 目录中 three.js 路径不确定(404 返回 HTML),且 potree.js webpack 打包不暴露 `window.THREE` | 从 CDN 加载 `three@0.124.0`(与 Potree 内部版本一致),确保 `window.THREE` 可用 |
 | 31 | `h.setNavigationMode is not a function` | Potree 1.8.0 的 Viewer 没有 `setNavigationMode` 方法(1.8.2 才有) | 改为直接操作 `viewer.inputHandler` 的 `rotate`/`pan` 方法实现左键平移 |
 | 32 | el-radio `label act as value is about to be deprecated` | Element Plus 3.0.0 的 el-radio-button 用 `label` 作为值已废弃 | 改用 `value` 属性 |
+| 33 | 绘制模式下左键点击无反应 + 无法移动视角 | `disablePotreeNavigation()` 完全禁用了 `inputHandler.enabled=false`,导致所有鼠标交互失效;`handleMouseMove` 也 `stopImmediatePropagation` 阻止了 Potree 导航事件 | 不禁用 `inputHandler`,只拦截左键 `click` 放置锚点;`mousemove` 不阻止冒泡;右键拖拽旋转 + 中键/滚轮缩放保持可用 |
+| 34 | three.js CDN 在内网环境加载失败 | 内网无法访问 `cdn.jsdelivr.net` | 动态加载脚本,CDN 失败后依次尝试 4 个本地路径;DrawingManager 初始化增加 3 秒重试等待 |
 
 ---
 
