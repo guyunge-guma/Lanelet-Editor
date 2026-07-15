@@ -126,8 +126,9 @@ FastAPI (uvicorn)
 | 21 | PotreeConverter 运行成功但点位大幅丢失(259 万点降到几乎为空) | **最终确认:不是 libtbb 问题**。真正原因是后端 `pcd2las.py` 的 `_build_dtype` 跳过了 padding 字段(`_`),导致 dtype itemsize(80) < 实际点大小(120),`frombuffer` 读取错位,X/Y/Z 全部读到错误字段的值 | 修复 `pcd2las.py`:padding 字段用 `_pad{i}` 保留在 dtype 中,不再跳过;添加 dtype itemsize 与 PCD 头部点大小的一致性校验 |
 | 22 | 多个点云叠加显示,加载新的不删除旧的 | `MapView.vue` 的 `loadPointcloud` 只做 `addPointCloud`,不清理旧点云 | 加载新点云前遍历 `viewer.scene.pointclouds`,用 `splice` 移除 + `dispose()` 释放资源(见 Issue #24) |
 | 23 | 已上传文件无法手动重新转换,必须重新上传 | 后端无手动转换 API | 新增 `POST /api/pointclouds/{name}/convert` 接口;前端 FileManager 未转换文件显示「转换」按钮,下拉菜单加「重新转换」 |
-| 24 | `c.scene.removePointCloud is not a function` | Potree 1.8.2 的 `scene` 对象不提供 `removePointCloud` 方法 | 改用 `scene.pointclouds.splice()` 手动从数组移除 + `geometry.dispose()` / `material.dispose()` 释放 GPU 资源 |
+| 24 | `c.scene.removePointCloud is not a function` | Potree 1.8.2 的 `scene` 对象不提供 `removePointCloud` 方法 | 改用 `scene.pointclouds.splice()` 手动从数组移除 + 延迟 500ms 后 `geometry.dispose()` / `material.dispose()` 释放 GPU 资源 |
 | 25 | 后端 Docker 构建时 apt 下载慢(196 秒) | Dockerfile 未配置国内 apt 源,默认走 `deb.debian.org` | 添加 `sed` 替换为 `mirrors.aliyun.com`,兼容 Debian 12 deb822 和传统 sources.list 两种格式 |
+| 26 | 切换点云多次后崩溃 `Cannot read properties of null (reading 'attributes')` | `splice` 后立即 `dispose()` 销毁了 geometry,但 Potree 渲染循环是异步的,仍在引用已销毁的对象 | 改为先 `visible=false` + `splice` 移除,延迟 500ms 后再 `dispose()`,让渲染循环自然跳过已移除的点云 |
 
 ---
 

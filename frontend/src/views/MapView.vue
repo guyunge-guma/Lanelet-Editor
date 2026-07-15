@@ -139,12 +139,27 @@ async function loadPointcloud(pc: PointCloudItem) {
     console.log('[Lanelet Editor] 加载点云:', pc.url)
 
     // 移除旧点云,避免多个点云叠加
-    // Potree 1.8.2 的 scene 没有 removePointCloud 方法,需要手动从数组移除 + 释放资源
+    // Potree 1.8.2 的 scene 没有 removePointCloud 方法
+    // 注意: 不能立即 dispose geometry/material,因为 Potree 渲染循环是异步的,
+    // 立即销毁会导致渲染循环读到 null.attributes 而崩溃。
+    // 只从数组移除 + 标记不可见,让渲染循环自然跳过,延迟一帧后再 dispose。
     const oldPointClouds = [...(viewer.scene.pointclouds || [])]
     for (const oldPc of oldPointClouds) {
+      oldPc.visible = false
       viewer.scene.pointclouds.splice(viewer.scene.pointclouds.indexOf(oldPc), 1)
-      if (oldPc.geometry) oldPc.geometry.dispose()
-      if (oldPc.material) oldPc.material.dispose()
+    }
+    // 延迟释放 GPU 资源(等渲染循环跑完当前帧)
+    if (oldPointClouds.length > 0) {
+      setTimeout(() => {
+        for (const oldPc of oldPointClouds) {
+          try {
+            if (oldPc.geometry) oldPc.geometry.dispose()
+            if (oldPc.material) oldPc.material.dispose()
+          } catch (e) {
+            // 已被释放,忽略
+          }
+        }
+      }, 500)
     }
 
     Potree.loadPointCloud(pc.url, pc.name, (e: any) => {
