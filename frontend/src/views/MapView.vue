@@ -99,10 +99,11 @@ import {
 
 const getPotree = () => (window as any).Potree
 const getTHREE = () => {
-  // three.js: potree.js 已在构建时打补丁,暴露内部 THREE 到 window.THREE
+  // potree.js 已在构建时打补丁,内部 THREE 暴露到 Potree.THREE
   // 这样应用代码与 Potree 使用同一个 THREE 实例,消除双实例兼容性问题
+  const Potree = (window as any).Potree
+  if (Potree?.THREE) return Potree.THREE
   if ((window as any).THREE) return (window as any).THREE
-  if ((window as any).Potree?.THREE) return (window as any).Potree.THREE
   return null
 }
 

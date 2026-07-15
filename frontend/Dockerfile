@@ -17,10 +17,10 @@ RUN unzip -q /tmp/potree.zip -d /tmp/potree-extract \
     && cp -r /tmp/potree-extract/*/libs/* /app/public/libs/ \
     && rm -rf /tmp/potree.zip /tmp/potree-extract
 
-# 补丁 potree.js: 暴露 Potree 内部 THREE.js 到 window.THREE
+# 补丁 potree.js: 暴露 Potree 内部 THREE.js 到 exports.THREE
 # 消除双 THREE 实例导致的 pick/dispose/事件兼容性问题
-COPY patch_potree.js /app/patch_potree.js
-RUN node /app/patch_potree.js /app/public/potree/potree.js
+COPY patch_potree.cjs /app/patch_potree.cjs
+RUN node /app/patch_potree.cjs /app/public/potree/potree.js
 
 # 安装前端依赖(用 cache mount 加速重复构建)
 COPY package.json package-lock.json* ./
