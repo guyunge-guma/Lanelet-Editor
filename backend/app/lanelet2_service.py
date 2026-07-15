@@ -86,7 +86,9 @@ class Lanelet2Service:
         if not LANELET2_AVAILABLE:
             raise RuntimeError("lanelet2 库未安装")
         out_path = str(out_path)
-        write(out_path, self.map, self.projector, self.origin)
+        # lanelet2 的 write 签名: write(path, map, projector)
+        # projector 内部已包含 origin,不需要额外传 origin 参数
+        write(out_path, self.map, self.projector)
         return out_path
 
     def import_osm(self, in_path: str | Path) -> int:

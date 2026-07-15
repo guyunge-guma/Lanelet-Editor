@@ -162,6 +162,11 @@ function initPotree() {
     viewer.setEDLStrength(0.4)
     viewer.setPointBudget(2_000_000)
     viewer.setBackground('gradient')
+
+    // 导航模式: EarthControls 支持左键平移 + 右键旋转 + 滚轮缩放
+    // 默认 OrbitControls 左键旋转,放大后无法平移只能看到一小块
+    viewer.setNavigationMode(Potree.EarthControls)
+
     viewer.loadGUI((() => {
       const toggle = document.querySelector('#potree_sidebar_container')
       if (toggle) (toggle as HTMLElement).style.display = 'none'

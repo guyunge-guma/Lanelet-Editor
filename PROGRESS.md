@@ -129,6 +129,9 @@ FastAPI (uvicorn)
 | 24 | `c.scene.removePointCloud is not a function` | Potree 1.8.2 的 `scene` 对象不提供 `removePointCloud` 方法 | 改用 `scene.pointclouds.splice()` 手动从数组移除 + 延迟 500ms 后 `geometry.dispose()` / `material.dispose()` 释放 GPU 资源 |
 | 25 | 后端 Docker 构建时 apt 下载慢(196 秒) | Dockerfile 未配置国内 apt 源,默认走 `deb.debian.org` | 添加 `sed` 替换为 `mirrors.aliyun.com`,兼容 Debian 12 deb822 和传统 sources.list 两种格式 |
 | 26 | 切换点云多次后崩溃 `Cannot read properties of null (reading 'attributes')` | `splice` 后立即 `dispose()` 销毁了 geometry,但 Potree 渲染循环是异步的,仍在引用已销毁的对象 | 改为先 `visible=false` + `splice` 移除,延迟 500ms 后再 `dispose()`,让渲染循环自然跳过已移除的点云 |
+| 27 | `THREE 库未加载,LineString 绘制功能不可用` | Potree 1.8.2 的 `potree.js` 不自动暴露 `window.THREE`(内部用 ES module,不挂到全局) | index.html 中单独加载 `/libs/three.js/three.min.js`(在 potree.js 之前) |
+| 28 | 导出 OSM 失败: `No registered converter...Origin` | `lanelet2.write()` 第 4 个参数传了 `self.origin`,但 write 只接受 3 个参数(path, map, projector),projector 内部已包含 origin | 去掉多余的 `self.origin` 参数 |
+| 29 | 放大后无法平移,只能看到一小块 | Potree 默认 `OrbitControls` 左键旋转,不支持平移 | 改用 `viewer.setNavigationMode(Potree.EarthControls)`,左键平移 + 右键旋转 + 滚轮缩放 |
 
 ---
 
@@ -219,7 +222,7 @@ docker exec lanelet-backend cat /app/data/pointclouds/industrial_area/metadata.j
 > 红绿灯/马路沿/车道方向/点位交叉检测等 Vector Map Builder 全功能对标。
 > 拆分为 6 轮渐进式开发,每轮独立可交付。
 
-### 第 2 轮(进行中): 文件管理 + PCD 自动转换 + 转换进度
+### 第 2 轮: 文件管理 + PCD 自动转换 + 转换进度✅
 
 **目标**: 上传 PCD → 后端自动转 LAS + 转 Potree → 前端实时看进度 → 文件可管理
 
