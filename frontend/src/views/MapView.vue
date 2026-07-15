@@ -139,9 +139,12 @@ async function loadPointcloud(pc: PointCloudItem) {
     console.log('[Lanelet Editor] 加载点云:', pc.url)
 
     // 移除旧点云,避免多个点云叠加
+    // Potree 1.8.2 的 scene 没有 removePointCloud 方法,需要手动从数组移除 + 释放资源
     const oldPointClouds = [...(viewer.scene.pointclouds || [])]
     for (const oldPc of oldPointClouds) {
-      viewer.scene.removePointCloud(oldPc)
+      viewer.scene.pointclouds.splice(viewer.scene.pointclouds.indexOf(oldPc), 1)
+      if (oldPc.geometry) oldPc.geometry.dispose()
+      if (oldPc.material) oldPc.material.dispose()
     }
 
     Potree.loadPointCloud(pc.url, pc.name, (e: any) => {
