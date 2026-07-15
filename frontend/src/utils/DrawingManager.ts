@@ -135,6 +135,7 @@ export class DrawingManager {
 
   /** 绑定后的事件处理函数引用(便于移除监听) */
   private boundMouseMove: (e: MouseEvent) => void
+  private boundMouseDown: (e: MouseEvent) => void
   private boundClick: (e: MouseEvent) => void
   private boundDblClick: (e: MouseEvent) => void
   private boundContextMenu: (e: MouseEvent) => void
@@ -155,6 +156,7 @@ export class DrawingManager {
     this.THREE = THREE
 
     this.boundMouseMove = this.handleMouseMove.bind(this)
+    this.boundMouseDown = this.handleMouseDown.bind(this)
     this.boundClick = this.handleClick.bind(this)
     this.boundDblClick = this.handleDblClick.bind(this)
     this.boundContextMenu = this.handleContextMenu.bind(this)
@@ -165,6 +167,8 @@ export class DrawingManager {
     const dom = this.getDomElement()
     if (dom) {
       dom.addEventListener('mousemove', this.boundMouseMove, true)
+      // 始终屏蔽 canvas 上的系统右键菜单(utools / 浏览器默认菜单)
+      dom.addEventListener('contextmenu', this.boundContextMenu, true)
     }
   }
 
@@ -223,9 +227,12 @@ export class DrawingManager {
     // 注册绘制期事件(捕获阶段,阻止冒泡以屏蔽 Potree)
     const dom = this.getDomElement()
     if (dom) {
+      // 拦截左键 mousedown,防止 Potree InputHandler 启动旋转
+      // click 事件仍会正常触发(与 mousedown 是独立事件),用于放置锚点
+      dom.addEventListener('mousedown', this.boundMouseDown, true)
       dom.addEventListener('click', this.boundClick, true)
       dom.addEventListener('dblclick', this.boundDblClick, true)
-      dom.addEventListener('contextmenu', this.boundContextMenu, true)
+      // contextmenu 已在构造函数中始终注册,无需重复
     }
     window.addEventListener('keydown', this.boundKeyDown, true)
 
@@ -240,9 +247,10 @@ export class DrawingManager {
     // 移除绘制期事件
     const dom = this.getDomElement()
     if (dom) {
+      dom.removeEventListener('mousedown', this.boundMouseDown, true)
       dom.removeEventListener('click', this.boundClick, true)
       dom.removeEventListener('dblclick', this.boundDblClick, true)
-      dom.removeEventListener('contextmenu', this.boundContextMenu, true)
+      // contextmenu 始终保留(构造函数中注册)
     }
     window.removeEventListener('keydown', this.boundKeyDown, true)
 
@@ -571,6 +579,7 @@ export class DrawingManager {
     const dom = this.getDomElement()
     if (dom) {
       dom.removeEventListener('mousemove', this.boundMouseMove, true)
+      dom.removeEventListener('contextmenu', this.boundContextMenu, true)
     }
     this.onPointAdded = undefined
     this.onLineFinished = undefined
@@ -607,6 +616,14 @@ export class DrawingManager {
     }
   }
 
+  private handleMouseDown(event: MouseEvent): void {
+    if (!this.isDrawing) return
+    if (event.button !== 0) return // 仅拦截左键
+    // 阻止 Potree InputHandler 收到左键 mousedown,防止启动旋转
+    // click 事件仍会正常触发(与 mousedown 是独立事件),用于放置锚点
+    event.stopImmediatePropagation()
+  }
+
   private handleClick(event: MouseEvent): void {
     if (!this.isDrawing) return
     // 只响应左键单击(用于放置锚点)
@@ -628,12 +645,13 @@ export class DrawingManager {
   }
 
   private handleContextMenu(event: MouseEvent): void {
-    if (!this.isDrawing) return
-    // 右键:撤销最后一个点(并屏蔽系统右键菜单)
-    // 注意:右键拖拽旋转仍然可用(因为 contextmenu 只在右键松开时触发,不影响拖拽)
+    // 始终屏蔽 Potree canvas 上的系统右键菜单(utools / 浏览器默认菜单)
     event.stopImmediatePropagation()
     event.preventDefault()
-    this.undoLastPoint()
+    // 绘制模式下,右键单击同时撤销最后一个锚点
+    if (this.isDrawing) {
+      this.undoLastPoint()
+    }
   }
 
   private handleKeyDown(event: KeyboardEvent): void {
