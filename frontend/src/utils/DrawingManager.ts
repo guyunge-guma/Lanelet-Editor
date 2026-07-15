@@ -643,10 +643,9 @@ export class DrawingManager {
     event.preventDefault()
     const point = this.pickPoint(event)
     if (!point) {
-      console.warn('[DrawingManager] handleMouseUp: pickPoint 返回 null,未命中点云。请确认鼠标在点云可见区域内点击。')
+      console.warn('[DrawingManager] 左键点击未命中点云,请确保鼠标在点云可见区域内点击')
       return
     }
-    console.log('[DrawingManager] handleMouseUp: 拾取到点', point.x, point.y, point.z)
     this.addPoint(point)
   }
 
@@ -779,68 +778,108 @@ export class DrawingManager {
   /**
    * Potree 1.8.2 点云拾取:从鼠标位置发射射线,在所有点云中找最近命中点
    *
-   * 关键:必须传 THREE.Ray 实例给 pc.pick(),不能用普通对象。
-   * Potree 内部会调用 ray.intersectBox() 等方法,普通对象没有这些方法,
-   * 会抛 TypeError 被外层 catch 静默吞掉,导致拾取永远返回 null。
+   * 三级回退策略:
+   * 1. 优先用 Potree 自带的 inputHandler.getMousePointCloudIntersection()
+   *    该方法用 Potree 内部 THREE 创建射线,避免外部 THREE 实例不匹配
+   * 2. 手动射线-包围盒相交:用 THREE.Raycaster 对点云 BoundingBox 求交
+   * 3. 直接调用 pc.pick()(可能因 THREE 实例不匹配而失败)
    */
   private pickPoint(event: MouseEvent): any | null {
     if (!this.viewer || !this.THREE) return null
     const pointclouds = this.viewer.scene?.pointclouds
     if (!pointclouds || pointclouds.length === 0) {
-      console.warn('[DrawingManager] pickPoint: 场景中无点云')
       return null
     }
 
     const dom = this.viewer.renderer?.domElement
-    if (!dom) {
-      console.warn('[DrawingManager] pickPoint: 无法获取 renderer.domElement')
-      return null
-    }
+    if (!dom) return null
 
     const rect = dom.getBoundingClientRect()
     const x = ((event.clientX - rect.left) / rect.width) * 2 - 1
     const y = -((event.clientY - rect.top) / rect.height) * 2 + 1
 
-    const camera = this.getCamera()
-    if (!camera) {
-      console.warn('[DrawingManager] pickPoint: 无法获取 camera, viewer keys:', Object.keys(this.viewer), 'scene keys:', Object.keys(this.viewer.scene || {}))
-      return null
-    }
-
-    // 用 THREE.Raycaster 正确构建射线(处理相机矩阵,避免手动 unproject 出错)
-    const raycaster = new this.THREE.Raycaster()
-    raycaster.setFromCamera(new this.THREE.Vector2(x, y), camera)
-
-    // Potree pc.pick() 需要真正的 THREE.Ray 实例
-    const ray = new this.THREE.Ray(
-      raycaster.ray.origin.clone(),
-      raycaster.ray.direction.clone(),
-    )
-
-    let closestPoint: any = null
-    let closestDist = Infinity
-
-    for (const pc of pointclouds) {
-      if (!pc) continue
-      if (typeof pc.pick !== 'function') {
-        console.warn('[DrawingManager] pickPoint: 点云对象没有 pick 方法,类型:', pc.constructor?.name)
-        continue
-      }
+    // ---- 策略 1: Potree 自带拾取 API ----
+    // inputHandler.getMousePointCloudIntersection 用 Potree 内部 THREE 创建射线,
+    // 避免外部 window.THREE 与 Potree 内部 THREE 实例不匹配的问题
+    const inputHandler = this.viewer.inputHandler
+    if (inputHandler && typeof inputHandler.getMousePointCloudIntersection === 'function') {
       try {
-        const result = pc.pick(this.viewer.renderer, camera, ray)
+        const mouseNDC = { x, y }
+        const result = inputHandler.getMousePointCloudIntersection(mouseNDC)
         if (result && result.position) {
-          if (result.distanceToCamera < closestDist) {
-            closestDist = result.distanceToCamera
-            closestPoint = result.position.clone()
-          }
+          const pos = result.position
+          return new this.THREE.Vector3(pos.x, pos.y, pos.z)
         }
       } catch (err) {
-        // 暴露被吞掉的错误,方便排查
-        console.error('[DrawingManager] pickPoint: pc.pick() 抛出异常:', err)
+        console.warn('[DrawingManager] getMousePointCloudIntersection 异常:', err)
       }
     }
 
-    return closestPoint
+    // ---- 策略 2: 手动射线-包围盒相交 ----
+    // 对每个点云的 BoundingBox 做射线相交,返回最近交点
+    const camera = this.getCamera()
+    if (camera) {
+      const raycaster = new this.THREE.Raycaster()
+      raycaster.setFromCamera(new this.THREE.Vector2(x, y), camera)
+      const ray = raycaster.ray
+
+      let closestPoint: any = null
+      let closestDist = Infinity
+
+      for (const pc of pointclouds) {
+        if (!pc) continue
+        try {
+          // 获取点云世界坐标包围盒
+          let bbox: any = null
+          if (typeof pc.getBoundingBoxWorld === 'function') {
+            bbox = pc.getBoundingBoxWorld()
+          } else if (pc.boundingBox) {
+            bbox = pc.boundingBox.clone()
+            if (pc.matrixWorld) bbox.applyMatrix4(pc.matrixWorld)
+          }
+          if (!bbox) continue
+
+          const intersection = ray.intersectBox(bbox, new this.THREE.Vector3())
+          if (intersection) {
+            const dist = intersection.distanceTo(camera.position)
+            if (dist < closestDist) {
+              closestDist = dist
+              closestPoint = intersection
+            }
+          }
+        } catch {
+          // 忽略单个点云的包围盒计算异常
+        }
+      }
+
+      if (closestPoint) {
+        return closestPoint
+      }
+    }
+
+    // ---- 策略 3: 直接调用 pc.pick()(最后手段) ----
+    if (camera) {
+      const raycaster = new this.THREE.Raycaster()
+      raycaster.setFromCamera(new this.THREE.Vector2(x, y), camera)
+      const ray = new this.THREE.Ray(
+        raycaster.ray.origin.clone(),
+        raycaster.ray.direction.clone(),
+      )
+
+      for (const pc of pointclouds) {
+        if (!pc || typeof pc.pick !== 'function') continue
+        try {
+          const result = pc.pick(this.viewer.renderer, camera, ray)
+          if (result && result.position) {
+            return result.position.clone()
+          }
+        } catch {
+          // pc.pick 可能因 THREE 实例不匹配而失败,静默忽略
+        }
+      }
+    }
+
+    return null
   }
 
   /** 去除连续距离极近的重复点 */

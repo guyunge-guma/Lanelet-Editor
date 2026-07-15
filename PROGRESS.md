@@ -139,7 +139,7 @@ FastAPI (uvicorn)
 | 34 | three.js CDN 在内网环境加载失败 | 内网无法访问 `cdn.jsdelivr.net` | 动态加载脚本,CDN 失败后依次尝试 4 个本地路径;DrawingManager 初始化增加 3 秒重试等待 |
 | 35 | 绘制模式下左键单击无法放置锚点 | Potree InputHandler 在 `click` 捕获阶段先注册,`stopImmediatePropagation()` 阻止了 DrawingManager 的 `handleClick` 执行;`mousedown` 被 Potree 拦截启动旋转 | 绘制模式下捕获阶段拦截左键 `mousedown` 阻止旋转 + 改用 `mouseup` 检测简单点击(移动<5px)放点,完全不依赖 `click` 事件 |
 | 36 | 右键单击弹出 utools/Windows 系统菜单 | `contextmenu` 只在绘制模式注册,非绘制模式右键会弹出系统菜单 | 将 `contextmenu` 监听移至构造函数,始终在 canvas 上屏蔽系统右键菜单 |
-| 37 | 绘制模式下左键点击仍无法打点(`已添加点的数: 0`),右键拖拽和旋转已恢复正常 | 两个问题叠加:① `pickPoint` 传给 `pc.pick()` 的 `ray` 是普通 JS 对象而非 `THREE.Ray` 实例,Potree 内部调用 `ray.intersectBox()` 时抛 TypeError 被 catch 静默吞掉;② `this.viewer.scene.camera` 返回 undefined(Potree 1.8.2 不同构建方式下 camera 可能挂在 `viewer.camera` 而非 `viewer.scene.camera`) | ① 用 `THREE.Raycaster.setFromCamera()` + `new THREE.Ray()` 构建真正的 Ray 实例;② 新增 `getCamera()` 方法,依次尝试 `scene.camera` → `scene.getActiveCamera()` → `viewer.camera` 三条路径获取相机;③ `try/catch` 中加 `console.error` 暴露被吞掉的错误;④ `handleMouseUp` 加诊断日志确认点击触发和拾取结果 |
+| 37 | 绘制模式下左键点击仍无法打点(`已添加点的数: 0`),右键拖拽和旋转已恢复正常 | 三个问题叠加:① `pickPoint` 传给 `pc.pick()` 的 `ray` 是普通 JS 对象而非 `THREE.Ray` 实例;② `this.viewer.scene.camera` 返回 undefined(camera 挂在 `viewer.camera` 或需 `scene.getActiveCamera()`);③ 即使修复了 ray 和 camera,`pc.pick()` 仍抛 `Cannot read properties of undefined (reading 'getSize')`,根因是外部加载的 `window.THREE` 与 Potree webpack 内部的 THREE 是不同实例,Potree 内部 pick 方法用内部 THREE 创建的对象与外部 THREE 创建的 Ray 不兼容 | 三级回退策略:① 优先用 Potree 自带 `inputHandler.getMousePointCloudIntersection()`(用内部 THREE 创建射线);② 手动射线-包围盒相交(用 `THREE.Raycaster` 对点云 `getBoundingBoxWorld()` 求交,返回最近交点);③ 最后才尝试 `pc.pick()` |
 
 ---
 
