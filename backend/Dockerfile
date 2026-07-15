@@ -20,7 +20,7 @@ RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debia
 # 导致 TBB 并行处理静默失败,点位大幅丢失(259万点 → 几乎为空)。
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
-    libgl1-mesa-glx \
+    libgl1 \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------- Python 配置 ----------
