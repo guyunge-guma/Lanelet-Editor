@@ -121,43 +121,46 @@ FastAPI (uvicorn)
 | 16 | `Cannot find module '../components/FileManager.vue'` | vue-tsc 2.x 在 build 模式下不识别 `*.vue` 模块声明 | build 脚本去掉 `vue-tsc -b`,改为 `vite build`;类型检查单独用 `npm run typecheck` |
 | 17 | `Element is missing end tag (FileManager.vue:65)` | `el-dropdown` 的 `#dropdown` template 写成两个 `</el-dropdown>` 闭合 | 改为 `</template></el-dropdown>` |
 | 18 | `PotreeConverter: liblaszip.so: cannot open shared object file` | 宿主机编译的 laszip 动态库装到 `/usr/local/lib`,未挂载到容器 | ① 宿主机复制 `liblaszip.so` 到 `/opt/potreeconverter/lib/` ② 后端 Dockerfile 加 `LD_LIBRARY_PATH=/opt/potreeconverter/lib` |
-| 19 | `PotreeConverter: libtbb.so.12: cannot open shared object file` | 宿主机(RHEL 10)编译 PotreeConverter 链接了系统的 `libtbb.so.12`,但容器(Debian)内无此库 | ① Dockerfile 加 `libtbb-dev` 安装 ② `build_potreeconverter.sh` 编译后自动复制 `libtbb.so.12` 到 `/opt/potreeconverter/lib/` ③ 提供 `fix_libtbb.sh` 一键修复脚本 |
-| 20 | PotreeConverter 运行成功但点位大幅丢失(从 259 万点降到几乎为空) | 手动复制的 `libtbb.so.12` 与编译时链接的版本 ABI 不兼容,TBB 并行处理静默失败,只处理极少数点 | ① 从宿主机复制**编译时链接的原始** `libtbb.so.12`(非任意版本)到 `/opt/potreeconverter/lib/` ② API 端点补齐 `--output-format LAZ --attributes POSITION RGB` 参数 ③ 转换后验证 `metadata.json` + `hierarchy.bin` 完整性 |
+| 19 | `PotreeConverter: libtbb.so.12: cannot open shared object file` | 宿主机(RHEL 10)编译 PotreeConverter 链接了系统的 `libtbb.so.12`,但容器(Debian)内无此库 | ① `build_potreeconverter.sh` 编译后自动复制 `libtbb.so.12` 到 `/opt/potreeconverter/lib/` ② 提供 `fix_libtbb.sh` 一键修复脚本 ③ Dockerfile 移除 `libtbb-dev`(避免 Debian 版干扰) |
+| 20 | `fix_libtbb.sh` 复制后 libtbb.so.12 变成坏链接 | `cp -L` 正确复制了真实文件,但随后 `ln -sf libtbb.so.12.11 libtbb.so.12` 把真实文件替换成了指向不存在文件的符号链接 | 修复脚本:直接 `cp -L` 保存为 SONAME,不再创建符号链接;验证是否为真实文件 |
+| 21 | PotreeConverter 运行成功但点位大幅丢失(259 万点降到几乎为空) | **最终确认:不是 libtbb 问题**。真正原因是后端 `pcd2las.py` 的 `_build_dtype` 跳过了 padding 字段(`_`),导致 dtype itemsize(80) < 实际点大小(120),`frombuffer` 读取错位,X/Y/Z 全部读到错误字段的值 | 修复 `pcd2las.py`:padding 字段用 `_pad{i}` 保留在 dtype 中,不再跳过;添加 dtype itemsize 与 PCD 头部点大小的一致性校验 |
+| 22 | 多个点云叠加显示,加载新的不删除旧的 | `MapView.vue` 的 `loadPointcloud` 只做 `addPointCloud`,不清理旧点云 | 加载新点云前遍历 `viewer.scene.pointclouds` 逐一 `removePointCloud` |
+| 23 | 已上传文件无法手动重新转换,必须重新上传 | 后端无手动转换 API | 新增 `POST /api/pointclouds/{name}/convert` 接口;前端 FileManager 未转换文件显示「转换」按钮,下拉菜单加「重新转换」 |
 
 ---
 
 ## 四、当前阻塞点
 
-### 4.1 libtbb.so.12 版本不匹配导致点位丢失(已修复,待验证)
-**状态**: 修复代码已提交,待在服务器上重新构建验证
+### 4.1 pcd2las.py padding 字段导致坐标错位(已修复)
+**状态**: 已修复,待服务器重新构建验证
 
-**问题**: PotreeConverter 在宿主机(RHEL 10)编译,链接宿主机的 `libtbb.so.12`。容器(Debian)内无此库,手动复制的版本 ABI 不兼容,导致 TBB 并行处理静默失败,259 万点只剩极少数。
+**问题**: 后端 `backend/app/converters/pcd2las.py` 的 `_build_dtype` 函数跳过了 padding 字段(名为 `_`),导致 numpy dtype itemsize(80 字节) < PCD 实际点大小(120 字节)。`np.frombuffer` 按 80 字节步长读取 120 字节的数据,所有字段全部错位 — X/Y/Z 读到的是其他字段的值,三个轴的范围完全一样([-78, 5242])。
 
-**修复方案**:
-1. `build_potreeconverter.sh` 编译后自动复制 `libtbb.so.12` 到 `/opt/potreeconverter/lib/`(通过 docker-compose 挂载到容器)
-2. `fix_libtbb.sh` 一键修复脚本(无需重新编译)
-3. `main.py` PotreeConverter 命令补齐 `--output-format LAZ --attributes POSITION RGB`
-4. 转换后验证 `metadata.json` + `hierarchy.bin` 完整性
+**诊断方法**: 用 `convert_debug.sh` 从 PCD 直接转换(使用独立的 `pcd2las.py` 正确保留 padding),对比 API 转换结果:
+- API 转换(错误): X/Y/Z 范围都是 [-78, 5242], octree.bin 12M, 157 万重复点
+- 脚本转换(正确): X[-97,113] Y[-86,114] Z[-2.7,27.6], octree.bin 30M, 无重复点
+
+**修复**:
+1. `pcd2las.py`: padding 字段用 `_pad{i}` 唯一名保留在 dtype 中,不再跳过
+2. `pcd2las.py`: 添加 dtype itemsize 与 PCD 头部声明的点大小一致性校验
+3. `MapView.vue`: 加载新点云前移除场景中已有的旧点云,避免叠加
 
 **验证步骤**:
 ```bash
-# 1. 在宿主机上运行修复脚本(或重新编译)
-sudo ./fix_libtbb.sh
-# 或: ./build_potreeconverter.sh
+# 1. 拉取代码并重新构建
+git pull
+docker compose up -d --build backend frontend
 
-# 2. 重启后端容器
-docker compose restart backend
-
-# 3. 验证容器内 libtbb 正确加载
-docker exec lanelet-backend ldd /opt/potreeconverter/PotreeConverter | grep libtbb
-# 期望: libtbb.so.12 => /opt/potreeconverter/lib/libtbb.so.12
-
-# 4. 删除旧的(错误的)转换结果,重新转换
+# 2. 删除旧的(错误的)转换结果和 LAS 文件
 docker exec lanelet-backend rm -rf /app/data/pointclouds/industrial_area
-# 通过前端重新上传,或手动转换
+docker exec lanelet-backend rm -f /app/data/raw/industrial_area.las
 
-# 5. 验证点位数量
-docker exec lanelet-backend cat /app/data/pointclouds/industrial_area/metadata.json | grep points
+# 3. 重新转换(前端点"转换"按钮,或手动触发)
+curl -X POST http://localhost:8000/api/pointclouds/industrial_area/convert
+
+# 4. 验证坐标范围正确
+docker exec lanelet-backend cat /app/data/pointclouds/industrial_area/metadata.json
+# 期望: boundingBox min/max 的 X/Y/Z 范围不同,不是全部一样
 ```
 
 ---
@@ -228,19 +231,28 @@ docker exec lanelet-backend cat /app/data/pointclouds/industrial_area/metadata.j
 - [x] `GET /api/files` — 统一文件列表(含 raw / converted / size / status)
 - [x] PotreeConverter 路径配置化(`config.py` 加 `potreeconverter_path`)
 - [x] docker-compose.yml 挂载 `/opt/potreeconverter` 到后端容器
+- [x] `POST /api/pointclouds/{name}/convert` — 手动触发转换(无需重新上传)(2026-07-15 新增)
+- [x] PotreeConverter 命令补齐 `--output-format LAZ --attributes POSITION RGB` 参数
+- [x] 转换后验证 `metadata.json` + `hierarchy.bin` 完整性
+- [x] `pcd2las.py` 修复 padding 字段跳过 bug(Issue #21)
 
 #### 前端
 - [x] 新建 `FileManager.vue` 组件(上传/进度/列表/删除/下载/重命名)
 - [x] API 封装 `api/index.ts` 新增: listFiles / uploadPointcloud / getConvertStatus / subscribeProgress / deletePointcloud / downloadUrl / renamePointcloud
+- [x] API 封装新增: `convertPointcloud` — 手动触发转换(2026-07-15)
 - [x] MapView.vue 集成 FileManager 到"文件"标签页
 - [x] 上传时显示转换进度条(SSE 订阅,EventSource)
 - [x] 上传完成后自动刷新列表 + 可点击加载
 - [x] 点云拾取基础能力(第 3 轮深化)
+- [x] FileManager 未转换文件显示「转换」按钮 + 下拉菜单「重新转换」(2026-07-15)
+- [x] MapView 加载新点云时移除旧点云,避免叠加(2026-07-15)
 
 #### 交付物
 - 上传 PCD 后无需手动跑脚本,后端自动完成两步转换
 - 前端实时显示"上传中 → 转换 LAS 中 → 转换 Potree 中 → 完成"
 - 可删除/下载/重命名任意点云文件
+- 可手动重新转换(无需重新上传)
+- 新增 `convert_debug.sh` 诊断转换脚本(打印 PCD 头部、LAS 点数、坐标范围、metadata.json)
 
 ---
 
@@ -364,16 +376,18 @@ docker exec lanelet-backend cat /app/data/pointclouds/industrial_area/metadata.j
 ## 七、技术债务
 
 ### 7.1 当前已知
-1. **PCD 转换未集成到后端**: 用户需手动跑两个脚本
+1. ~~PCD 转换未集成到后端~~ ✅ 已集成(第 2 轮)
 2. **PCD 格式覆盖不全**: 不支持 ascii / binary_compressed
 3. **前端依赖硬编码**: index.html 中 JS 路径写死,升级 Potree 版本需手动改
 4. **无数据持久化**: 后端重启后 LineString/Lanelet 丢失(第 2 轮实现)
 5. **无坐标系配置**: 原点经纬度写死在上海(第 4 轮实现)
+6. **根目录 `pcd2las.py` 与 `backend/app/converters/pcd2las.py` 重复**: 根目录的独立脚本保留 padding 字段(正确),后端版本曾跳过 padding(已修复),但两份代码应合并
+7. **转换任务状态仅存内存**: 后端重启后 `_tasks` 字典丢失,SSE 中断后无法恢复
 
-### 7.2 建议清理
-- 把 `pcd2las.py` 集成到后端 `app/converters/pcd2las.py`
-- 把 PotreeConverter 路径配置化(`config.py`)
-- 添加 `.env` 文件管理环境变量
+### 7.2 已清理
+- ~~把 `pcd2las.py` 集成到后端 `app/converters/pcd2las.py`~~ ✅
+- ~~把 PotreeConverter 路径配置化(`config.py`)~~ ✅
+- ~~添加 `.env` 文件管理环境变量~~ ✅
 
 ---
 
