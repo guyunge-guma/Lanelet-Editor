@@ -417,14 +417,9 @@ function toggleAnnotationOnly(): void {
   annotationOnlyMode.value = !annotationOnlyMode.value
   const v = viewerRef.value
   if (!v) return
-  // Potree 的 pointclouds 数组每个有 visible 属性
-  // 隐藏所有点云,但保留 THREE.js 场景中的标注对象
+  // 只隐藏点云对象,不隐藏整个场景(标注也挂在同一个场景上)
   for (const pc of (v.scene?.pointclouds ?? [])) {
     pc.visible = !annotationOnlyMode.value
-  }
-  // 同时隐藏 Potree 自带的场景元素(网格等)
-  if (v.scene?.scene) {
-    v.scene.scene.visible = !annotationOnlyMode.value
   }
   ElMessage.info(annotationOnlyMode.value ? '已切换到标注模式(隐藏点云)' : '已恢复全部显示')
 }

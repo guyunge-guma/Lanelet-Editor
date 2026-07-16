@@ -917,33 +917,36 @@ export class DrawingManager {
    * - false: 标注正常深度渲染(被点云遮挡)
    */
   setAnnotationOnTop(onTop: boolean): void {
+    // onTop=true: 标注穿透点云显示(depthTest=false)
+    // onTop=false: 标注正常深度渲染(depthTest=true)
+    const depthTest = !onTop
     // Lanelet 面片
     for (const entry of this.laneletMeshes.values()) {
-      entry.material.depthTest = !onTop
+      entry.material.depthTest = depthTest
       entry.material.needsUpdate = true
       for (const arrow of entry.arrows ?? []) {
-        arrow.line?.material && (arrow.line.material.depthTest = onTop)
-        arrow.cone?.material && (arrow.cone.material.depthTest = onTop)
+        arrow.line?.material && (arrow.line.material.depthTest = depthTest)
+        arrow.cone?.material && (arrow.cone.material.depthTest = depthTest)
       }
     }
     // 已完成线段
     for (const entry of this.finishedLines.values()) {
-      entry.material.depthTest = !onTop
+      entry.material.depthTest = depthTest
       entry.material.needsUpdate = true
     }
     // 锚点
     for (const mesh of this.anchorMeshes) {
-      mesh.material.depthTest = !onTop
+      mesh.material.depthTest = depthTest
       mesh.material.needsUpdate = true
     }
     // 预览线
     if (this.previewLine?.material) {
-      this.previewLine.material.depthTest = onTop
+      this.previewLine.material.depthTest = depthTest
       this.previewLine.material.needsUpdate = true
     }
     // 吸附指示器
     if (this.snapIndicator?.material) {
-      this.snapIndicator.material.depthTest = !onTop
+      this.snapIndicator.material.depthTest = depthTest
       this.snapIndicator.material.needsUpdate = true
     }
   }
