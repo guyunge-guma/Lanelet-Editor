@@ -2,17 +2,13 @@
  * patch_potree.cjs
  *
  * Potree 1.8.2 的预构建 potree.js 是 UMD 格式,THREE.js r124 源码直接
- * 内联在 UMD 闭包内,所有类(Vector3, Ray, Box3 等)都是局部变量,不导出。
+ * 内联在 UMD 闭包内。部分 class 声明在嵌套块作用域内(brace depth 3+),
+ * 文件末尾的 eval 无法访问它们(class 是块级作用域的)。
  *
- * 本脚本在 potree.js 末尾(exports 段)注入代码,用 eval 从闭包中收集
- * 所有 THREE.js 变量,导出为 exports.THREE。
- *
- * 这样 window.Potree.THREE 就是 Potree 内部使用的同一个 THREE 实例,
- * 应用代码直接使用它,彻底消除双 THREE 实例导致的兼容性问题。
+ * 本脚本对每个 class/const 声明,在其结束后立即插入导出语句,
+ * 确保导出代码与声明在同一个作用域内。
  *
  * 用法: node patch_potree.cjs [potree.js路径]
- *
- * 注意: 使用 .cjs 扩展名确保在 ES module 项目中也能以 CommonJS 运行
  */
 const fs = require('fs')
 
@@ -20,15 +16,13 @@ const filePath = process.argv[2] || './public/potree/potree.js'
 let code = fs.readFileSync(filePath, 'utf8')
 
 // 已打补丁则跳过
-if (code.includes('exports.THREE = (function')) {
+if (code.includes('patch_potree.cjs 注入')) {
   console.log('[patch] potree.js 已打补丁,跳过')
   process.exit(0)
 }
 
-// THREE.js r124 完整导出列表(来自 src/Three.js)
-// 包含: 常量、核心类、数学类、材质、几何体、曲线、辅助对象、加载器等
+// THREE.js r124 完整导出列表
 const threeNames = [
-  // 常量
   'REVISION', 'MOUSE', 'TOUCH',
   'CullFaceNone', 'CullFaceBack', 'CullFaceFront', 'CullFaceFrontBack',
   'BasicShadowMap', 'PCFShadowMap', 'PCFSoftShadowMap', 'VSMShadowMap',
@@ -52,18 +46,10 @@ const threeNames = [
   'AlphaFormat', 'RGBFormat', 'RGBAFormat', 'LuminanceFormat', 'LuminanceAlphaFormat',
   'RGBEFormat', 'DepthFormat', 'DepthStencilFormat',
   'RedFormat', 'RedIntegerFormat', 'RGFormat', 'RGIntegerFormat', 'RGBAIntegerFormat',
-  'RGB_S3TC_DXT1_Format', 'RGBA_S3TC_DXT1_Format', 'RGBA_S3TC_DXT3_Format', 'RGBA_S3TC_DXT5_Format',
-  'RGB_PVRTC_4BPPV1_Format', 'RGB_PVRTC_2BPPV1_Format', 'RGBA_PVRTC_4BPPV1_Format', 'RGBA_PVRTC_2BPPV1_Format',
-  'RGB_ETC1_Format', 'RGB_ETC2_Format', 'RGBA_ETC2_EAC_Format', 'RGBA_ASTC_4x4_Format', 'RGBA_ASTC_5x4_Format',
-  'RGBA_ASTC_5x5_Format', 'RGBA_ASTC_6x5_Format', 'RGBA_ASTC_6x6_Format', 'RGBA_ASTC_8x5_Format',
-  'RGBA_ASTC_8x6_Format', 'RGBA_ASTC_8x8_Format', 'RGBA_ASTC_10x5_Format', 'RGBA_ASTC_10x6_Format',
-  'RGBA_ASTC_10x8_Format', 'RGBA_ASTC_10x10_Format', 'RGBA_ASTC_12x10_Format', 'RGBA_ASTC_12x12_Format',
-  'RGBA_BPTC_Format', 'RGB_BPTC_SIGNED_Format', 'RGB_BPTC_UNSIGNED_Format',
-  'sRGBEncoding', 'LinearEncoding', 'SRGBColorSpace', 'LinearSRGBColorSpace',
+  'sRGBEncoding', 'LinearEncoding',
   'InterpolateDiscrete', 'InterpolateLinear', 'InterpolateSmooth',
   'ZeroCurvatureEnding', 'ZeroSlopeEnding', 'WrapAroundEnding',
   'TrianglesDrawMode', 'TriangleStripDrawMode', 'TriangleFanDrawMode',
-  'NormalAnimationBlendMode', 'AdditiveAnimationBlendMode',
   'BasicDepthPacking', 'RGBADepthPacking',
   'TangentSpaceNormalMap', 'ObjectSpaceNormalMap',
   'KeepStencilOp', 'ZeroStencilOp', 'ReplaceStencilOp', 'IncrementStencilOp', 'DecrementStencilOp',
@@ -74,8 +60,6 @@ const threeNames = [
   'EventDispatcher', 'Object3D', 'Raycaster', 'Layers', 'Clock', 'Uniform',
   'BufferGeometry', 'InstancedBufferGeometry', 'Geometry',
   'BufferAttribute', 'Float32BufferAttribute',
-  'Int8BufferAttribute', 'Uint8BufferAttribute', 'Uint8ClampedBufferAttribute',
-  'Int16BufferAttribute', 'Uint16BufferAttribute', 'Int32BufferAttribute', 'Uint32BufferAttribute', 'Float64BufferAttribute',
   'InterleavedBuffer', 'InstancedInterleavedBuffer', 'InterleavedBufferAttribute',
   'InstancedBufferAttribute', 'GLBufferAttribute', 'Face3',
   // 数学类
@@ -96,11 +80,12 @@ const threeNames = [
   'LatheGeometry', 'LatheBufferGeometry', 'OctahedronGeometry', 'OctahedronBufferGeometry',
   'ParametricGeometry', 'ParametricBufferGeometry', 'PlaneGeometry', 'PlaneBufferGeometry',
   'PolyhedronGeometry', 'RingGeometry', 'RingBufferGeometry', 'ShapeGeometry', 'ShapeBufferGeometry',
+  'SphereGeometry', 'SphereBufferGeometry',
   'TetrahedronGeometry', 'TetrahedronBufferGeometry', 'TorusGeometry', 'TorusBufferGeometry',
   'TorusKnotGeometry', 'TorusKnotBufferGeometry', 'TubeGeometry', 'TubeBufferGeometry', 'WireframeGeometry',
   // 对象
   'Scene', 'Mesh', 'InstancedMesh', 'Line', 'LineSegments', 'LineLoop', 'Points', 'Group', 'Sprite', 'LOD',
-  'SkinnedMesh', 'Skeleton', 'Bone', 'ImmediateRenderObject',
+  'SkinnedMesh', 'Skeleton', 'Bone',
   // 纹理
   'Texture', 'VideoTexture', 'DataTexture', 'DataTexture2DArray', 'DataTexture3D',
   'CompressedTexture', 'CubeTexture', 'CanvasTexture', 'DepthTexture',
@@ -108,20 +93,16 @@ const threeNames = [
   'Camera', 'PerspectiveCamera', 'OrthographicCamera', 'CubeCamera', 'ArrayCamera', 'StereoCamera',
   // 光源
   'Light', 'AmbientLight', 'DirectionalLight', 'PointLight', 'SpotLight', 'HemisphereLight',
-  'LightProbe', 'AmbientLightProbe', 'HemisphereLightProbe', 'RectAreaLight',
   // 辅助对象
   'ArrowHelper', 'AxesHelper', 'BoxHelper', 'Box3Helper', 'CameraHelper',
   'DirectionalLightHelper', 'GridHelper', 'HemisphereLightHelper', 'PointLightHelper',
   'PolarGridHelper', 'SkeletonHelper', 'SpotLightHelper', 'PlaneHelper',
   // 渲染器
-  'WebGLRenderer', 'WebGL1Renderer', 'WebGLRenderTarget', 'WebGLCubeRenderTarget', 'WebGLMultisampleRenderTarget',
+  'WebGLRenderer', 'WebGL1Renderer', 'WebGLRenderTarget', 'WebGLCubeRenderTarget',
   'ShaderLib', 'UniformsLib', 'UniformsUtils', 'ShaderChunk',
   'Fog', 'FogExp2',
   // 加载器
   'Loader', 'LoaderUtils', 'LoadingManager', 'DefaultLoadingManager', 'Cache', 'FileLoader',
-  'ImageLoader', 'ImageBitmapLoader', 'TextureLoader', 'ObjectLoader', 'MaterialLoader',
-  'BufferGeometryLoader', 'FontLoader', 'AnimationLoader', 'CompressedTextureLoader',
-  'CubeTextureLoader', 'DataTextureLoader',
   // 曲线
   'Curve', 'CurvePath', 'Path', 'ShapePath', 'Shape', 'Font',
   'ArcCurve', 'CatmullRomCurve3', 'CubicBezierCurve', 'CubicBezierCurve3',
@@ -129,44 +110,165 @@ const threeNames = [
   // 动画
   'AnimationClip', 'AnimationMixer', 'AnimationObjectGroup', 'AnimationUtils',
   'KeyframeTrack', 'PropertyBinding', 'PropertyMixer',
-  'BooleanKeyframeTrack', 'ColorKeyframeTrack', 'NumberKeyframeTrack', 'QuaternionKeyframeTrack',
-  'StringKeyframeTrack', 'VectorKeyframeTrack',
-  // 音频
-  'Audio', 'AudioAnalyser', 'AudioContext', 'AudioListener', 'PositionalAudio',
   // 其他
-  'DataUtils', 'ImageUtils', 'ShapeUtils', 'PMREMGenerator', 'WebGLUtils',
+  'DataUtils', 'ImageUtils', 'ShapeUtils',
 ]
 
-// 注入代码: 用 eval 从 UMD 闭包作用域中收集所有 THREE.js 变量
-// 关键: eval 必须直接在 UMD 闭包作用域中调用,不能包在嵌套函数里,
-// 否则无法访问外层闭包的局部变量(class 声明)
-const injection = `
-	// ===== patch_potree.cjs 注入: 暴露 Potree 内部 THREE 到 exports.THREE =====
-	exports.THREE = {};
-	var __threeNames = ${JSON.stringify(threeNames)};
-	for (var __i = 0; __i < __threeNames.length; __i++) {
-		try {
-			exports.THREE[__threeNames[__i]] = eval(__threeNames[__i]);
-		} catch(e) {
-			// 变量在闭包中不存在,跳过
-		}
-	}
-	// ===== patch_potree.cjs 注入结束 =====`
+/**
+ * 在代码中查找匹配的闭合大括号
+ * @param {string} code - 源代码
+ * @param {number} startPos - 起始位置(指向 class 声明)
+ * @returns {number} 闭合 } 的位置,或 -1
+ */
+function findClassEnd(code, startPos) {
+  // 找到 class 后的第一个 {
+  let braceStart = code.indexOf('{', startPos)
+  if (braceStart === -1) return -1
 
-// 找到注入位置: Object.defineProperty(exports, '__esModule', { value: true });
-const target = "Object.defineProperty(exports, '__esModule', { value: true });"
-const pos = code.indexOf(target)
+  let depth = 0
+  let i = braceStart
+  let inString = false, stringChar = ''
+  let inLineComment = false, inBlockComment = false
 
-if (pos === -1) {
-  console.error('[patch] 错误: 找不到 "Object.defineProperty(exports, \'__esModule\'..." ')
-  console.error('[patch] 请确认使用的是 Potree 1.8.2 预构建版本')
-  process.exit(1)
+  while (i < code.length) {
+    const ch = code[i]
+    const next = code[i + 1]
+
+    if (inLineComment) { if (ch === '\n') inLineComment = false; i++; continue }
+    if (inBlockComment) { if (ch === '*' && next === '/') { inBlockComment = false; i += 2; continue } i++; continue }
+    if (inString) {
+      if (ch === '\\') { i += 2; continue }
+      if (ch === stringChar) inString = false
+      i++; continue
+    }
+    if (ch === '/' && next === '/') { inLineComment = true; i += 2; continue }
+    if (ch === '/' && next === '*') { inBlockComment = true; i += 2; continue }
+    if (ch === '"' || ch === "'" || ch === '`') { inString = true; stringChar = ch; i++; continue }
+
+    if (ch === '{') depth++
+    if (ch === '}') {
+      depth--
+      if (depth === 0) return i
+    }
+    i++
+  }
+  return -1
 }
 
-code = code.slice(0, pos) + injection + '\n' + code.slice(pos)
+/**
+ * 查找 const/let/var 声明的结束分号(在深度 0 处)
+ */
+function findStatementEnd(code, startPos) {
+  let i = startPos
+  let depth = 0
+  let inString = false, stringChar = ''
+  let inLineComment = false, inBlockComment = false
+
+  while (i < code.length) {
+    const ch = code[i]
+    const next = code[i + 1]
+
+    if (inLineComment) { if (ch === '\n') inLineComment = false; i++; continue }
+    if (inBlockComment) { if (ch === '*' && next === '/') { inBlockComment = false; i += 2; continue } i++; continue }
+    if (inString) {
+      if (ch === '\\') { i += 2; continue }
+      if (ch === stringChar) inString = false
+      i++; continue
+    }
+    if (ch === '/' && next === '/') { inLineComment = true; i += 2; continue }
+    if (ch === '/' && next === '*') { inBlockComment = true; i += 2; continue }
+    if (ch === '"' || ch === "'" || ch === '`') { inString = true; stringChar = ch; i++; continue }
+
+    if (ch === '{' || ch === '(' || ch === '[') depth++
+    if (ch === '}' || ch === ')' || ch === ']') depth--
+    if (ch === ';' && depth === 0) return i
+    i++
+  }
+  return -1
+}
+
+// Step 1: 在 'use strict' 后初始化 exports.THREE
+const strictStr = "'use strict';"
+const strictPos = code.indexOf(strictStr)
+if (strictPos === -1) {
+  console.error('[patch] 错误: 找不到 \'use strict\'')
+  process.exit(1)
+}
+const initInsertPos = strictPos + strictStr.length
+code = code.slice(0, initInsertPos) +
+  '\n\t// patch_potree.cjs 注入: 初始化 THREE 导出对象' +
+  '\n\texports.THREE = exports.THREE || {};\n' +
+  code.slice(initInsertPos)
+
+// Step 2: 收集所有插入点
+const insertions = []
+let classCount = 0
+let constCount = 0
+let notFound = []
+
+for (const name of threeNames) {
+  const escapedName = name.replace(/\$/g, '\\$')
+
+  // 查找 class XXX 声明
+  const classPattern = new RegExp(`\\bclass\\s+${escapedName}\\b`)
+  const classMatch = classPattern.exec(code)
+  if (classMatch) {
+    const classEnd = findClassEnd(code, classMatch.index)
+    if (classEnd !== -1) {
+      insertions.push({
+        pos: classEnd + 1,
+        code: `\n\texports.THREE['${name}'] = ${name}; // patch_potree.cjs`,
+      })
+      classCount++
+      continue
+    }
+  }
+
+  // 查找 function XXX( 声明(THREE.js r124 很多类编译为 function 构造器)
+  const funcPattern = new RegExp(`\\bfunction\\s+${escapedName}\\s*\\(`)
+  const funcMatch = funcPattern.exec(code)
+  if (funcMatch) {
+    const funcEnd = findClassEnd(code, funcMatch.index) // 同样用大括号匹配
+    if (funcEnd !== -1) {
+      insertions.push({
+        pos: funcEnd + 1,
+        code: `\n\texports.THREE['${name}'] = ${name}; // patch_potree.cjs`,
+      })
+      classCount++
+      continue
+    }
+  }
+
+  // 查找 const/let/var XXX = 声明
+  const constPattern = new RegExp(`\\b(?:const|let|var)\\s+${escapedName}\\s*=`)
+  const constMatch = constPattern.exec(code)
+  if (constMatch) {
+    const stmtEnd = findStatementEnd(code, constMatch.index)
+    if (stmtEnd !== -1) {
+      insertions.push({
+        pos: stmtEnd + 1,
+        code: `\n\texports.THREE['${name}'] = ${name}; // patch_potree.cjs`,
+      })
+      constCount++
+      continue
+    }
+  }
+
+  notFound.push(name)
+}
+
+// Step 3: 按位置降序排列(从后往前插入,不影响前面的位置)
+insertions.sort((a, b) => b.pos - a.pos)
+
+for (const ins of insertions) {
+  code = code.slice(0, ins.pos) + ins.code + code.slice(ins.pos)
+}
 
 fs.writeFileSync(filePath, code)
 
-const foundCount = threeNames.length
-console.log(`[patch] 成功: potree.js 已打补丁,注入 ${foundCount} 个 THREE.js 导出名`)
+console.log(`[patch] 成功: potree.js 已打补丁`)
+console.log(`[patch]   class 导出: ${classCount}`)
+console.log(`[patch]   const/let/var 导出: ${constCount}`)
+console.log(`[patch]   未找到: ${notFound.length} (${notFound.slice(0, 10).join(', ')}${notFound.length > 10 ? '...' : ''})`)
+console.log(`[patch]   总计: ${classCount + constCount} / ${threeNames.length}`)
 console.log('[patch] window.Potree.THREE 将暴露 Potree 内部 THREE 实例')
