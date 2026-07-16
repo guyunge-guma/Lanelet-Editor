@@ -12,7 +12,7 @@ WORKDIR /app
 # ---- 从源码构建 Potree 1.8.2(暴露内部 THREE,消除双实例问题) ----
 # 优雅方案: 在入口 src/Potree.js 加一行 export { THREE },
 # rollup 自动解析所有模块的 THREE 引用并统一导出
-RUN git clone --depth 1 --branch 1.8.2 https://github.com/potree/potree.git /tmp/potree-src \
+RUN git clone --depth 1 --branch 1.8.2 https://gh-proxy.org/https://github.com/potree/potree.git /tmp/potree-src \
     && cd /tmp/potree-src \
     && npm config set registry https://registry.npmmirror.com \
     && npm install --ignore-scripts \
