@@ -49,6 +49,13 @@
         />
       </el-select>
     </div>
+    <div class="form-row">
+      <label>方向</label>
+      <el-select v-model="newDirection" size="small">
+        <el-option label="正向 (左→右)" value="forward" />
+        <el-option label="反向 (右→左)" value="backward" />
+      </el-select>
+    </div>
     <el-button
       type="primary"
       size="small"
@@ -190,6 +197,7 @@ import {
   updateLanelet,
   setLaneletRelations,
   getLaneletRelations,
+  getLinestring,
 } from '../api'
 
 /** Lanelet 子类型选项 */
@@ -243,6 +251,7 @@ const linestrings = computed(() => props.linestrings ?? [])
 const leftBoundId = ref<number | null>(null)
 const rightBoundId = ref<number | null>(null)
 const newSubtype = ref<string>('road')
+const newDirection = ref<'forward' | 'backward'>('forward')
 const creating = ref(false)
 const loadingList = ref(false)
 
@@ -370,6 +379,35 @@ async function handleCreate(): Promise<void> {
   const rightId = rightBoundId.value as number
   creating.value = true
   try {
+    // 碰撞检测:先拉取左右边界坐标,检查与已有 Lanelet 是否重叠
+    let leftCoords: number[] = []
+    let rightCoords: number[] = []
+    try {
+      const lg = await getLinestring(leftId)
+      leftCoords = lg.coords ?? []
+      const rg = await getLinestring(rightId)
+      rightCoords = rg.coords ?? []
+    } catch {
+      // 几何接口不可用,跳过碰撞检测
+    }
+
+    if (leftCoords.length > 0 && rightCoords.length > 0) {
+      const overlaps = drawingManager.value?.checkLaneletOverlap(leftCoords, rightCoords) ?? []
+      if (overlaps.length > 0) {
+        const ids = overlaps.map(id => `#${id}`).join(', ')
+        try {
+          await ElMessageBox.confirm(
+            `新建区域与已有 Lanelet (${ids}) 存在重叠,是否继续创建?`,
+            '区域碰撞警告',
+            { confirmButtonText: '继续创建', cancelButtonText: '取消', type: 'warning' },
+          )
+        } catch {
+          // 用户取消
+          return
+        }
+      }
+    }
+
     const res = await createLanelet(leftId, rightId, { subtype: newSubtype.value })
     const id: number = res?.id
     if (id === undefined || id === null) {
@@ -378,8 +416,6 @@ async function handleCreate(): Promise<void> {
     }
 
     // 拉取几何坐标用于可视化
-    let leftCoords: number[] = []
-    let rightCoords: number[] = []
     try {
       const g = await getLaneletGeometry(id)
       leftCoords = g.left_coords ?? []
@@ -392,12 +428,18 @@ async function handleCreate(): Promise<void> {
       id,
       left_id: leftId,
       right_id: rightId,
-      attrs: { subtype: newSubtype.value },
+      attrs: { subtype: newSubtype.value, direction: newDirection.value },
       left_coords: leftCoords,
       right_coords: rightCoords,
     }
     lanelets.value.push(entry)
     addMeshForEntry(entry)
+
+    // 应用用户设置的方向
+    if (newDirection.value === 'backward') {
+      drawingManager.value?.setLaneletDirection(id, 'backward')
+    }
+
     ElMessage.success(`Lanelet #${id} 已创建`)
     emit('lanelet-created', id)
     // 自动选中新建的 Lanelet
@@ -505,11 +547,19 @@ async function handleSubtypeChange(val: string): Promise<void> {
   const entry = selectedLanelet.value
   if (!entry) return
   try {
-    await updateLanelet(entry.id, { attrs: { ...entry.attrs, subtype: val } })
+    const res = await updateLanelet(entry.id, { attrs: { ...entry.attrs, subtype: val } })
+    // update_lanelet 会删除旧 Lanelet 并创建新的,ID 可能变化
+    const newId: number = res?.id ?? entry.id
+    if (newId !== entry.id) {
+      console.log(`[LaneletPanel] Lanelet ID 变化: #${entry.id} → #${newId}`)
+      // 更新可视化中的 ID
+      drawingManager.value?.removeLaneletMesh(entry.id)
+      entry.id = newId
+    }
     entry.attrs = { ...entry.attrs, subtype: val }
     // 颜色变更后重建可视化
     rebuildMeshForEntry(entry)
-    ElMessage.success(`Lanelet #${entry.id} 子类型已更新为 ${subtypeLabel(val)}`)
+    ElMessage.success(`Lanelet #${newId} 子类型已更新为 ${subtypeLabel(val)}`)
   } catch (e) {
     // 后端更新失败,仍更新前端可视化
     console.warn('[LaneletPanel] 更新 Lanelet 属性失败:', e)

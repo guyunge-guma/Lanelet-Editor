@@ -201,7 +201,9 @@ function initPotree() {
         }
         return
       }
-      drawingManagerRef.value = markRaw(new DrawingManager(viewer, THREE))
+      const dm = markRaw(new DrawingManager(viewer, THREE))
+      dm.lineIdMap = lineIdMap
+      drawingManagerRef.value = dm
       // 实时鼠标坐标显示(绘制/非绘制模式下均生效)
       drawingManagerRef.value.onMouseMove = (pos: MousePos | null) => {
         mousePos.value = pos

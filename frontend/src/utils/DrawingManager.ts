@@ -156,6 +156,9 @@ export class DrawingManager {
   /** Lanelet 可视化:id -> 记录(键为后端 Lanelet id) */
   private laneletMeshes: Map<number, LaneletMesh> = new Map()
 
+  /** 前端内部线段 id -> 后端 LineString id 的映射(由 MapView 注入) */
+  lineIdMap?: Map<number, number>
+
   /** 上次悬停拾取时间戳(节流) */
   private lastHoverTime = 0
 
@@ -512,18 +515,21 @@ export class DrawingManager {
       cn > 0 ? cz / cn : avgZ,
     )
 
-    // 箭头长度:边界总长度的 1/4,限制在 [1, 8] 米
+    // 箭头长度:边界总长度的 1/3,限制在 [2, 12] 米(增大可见性)
     const boundLen = this.estimateBoundLength(leftPts)
-    const arrowLen = Math.min(8, Math.max(1, boundLen / 4))
+    const arrowLen = Math.min(12, Math.max(2, boundLen / 3))
     const arrow = new THREE.ArrowHelper(
       dirVec,
       center,
       arrowLen,
       color,
-      arrowLen * 0.3,
-      arrowLen * 0.2,
+      arrowLen * 0.4,
+      arrowLen * 0.25,
     )
-    arrow.renderOrder = 901
+    // 箭头显示在所有区域面上层:关闭深度测试 + 高 renderOrder
+    arrow.renderOrder = 999
+    arrow.line?.material && (arrow.line.material.depthTest = false)
+    arrow.cone?.material && (arrow.cone.material.depthTest = false)
     this.threeScene.add(arrow)
 
     this.laneletMeshes.set(id, {
@@ -586,6 +592,131 @@ export class DrawingManager {
   /** 判断指定 Lanelet 是否已可视化 */
   hasLaneletMesh(id: number): boolean {
     return this.laneletMeshes.has(id)
+  }
+
+  /**
+   * 切换 Lanelet 方向(forward ↔ backward)
+   * 只更新箭头方向,不重建网格
+   */
+  setLaneletDirection(id: number, direction: 'forward' | 'backward'): void {
+    const entry = this.laneletMeshes.get(id)
+    if (!entry || !entry.arrow || !this.THREE) return
+
+    // 获取当前箭头方向向量,取反
+    const currentDir = new this.THREE.Vector3()
+    entry.arrow.getWorldDirection(currentDir)
+    if (direction === 'backward') {
+      currentDir.negate()
+    }
+
+    // 重新设置箭头方向(ArrowHelper.setDirection 需要归一化向量)
+    currentDir.normalize()
+    entry.arrow.setDirection(currentDir)
+  }
+
+  /**
+   * 检测新 Lanelet 是否与已有 Lanelet 区域重叠(XY 平面)
+   * 使用射线投射:对新多边形的每个顶点,检查是否落在已有 Lanelet 的多边形内
+   *
+   * @param leftCoords 新 Lanelet 左边界坐标
+   * @param rightCoords 新 Lanelet 右边界坐标
+   * @param excludeId 排除不检测的 Lanelet id(自身更新时用)
+   * @returns 重叠的 Lanelet id 数组,空数组表示无碰撞
+   */
+  checkLaneletOverlap(
+    leftCoords: number[],
+    rightCoords: number[],
+    excludeId?: number,
+  ): number[] {
+    if (!this.THREE) return []
+    const THREE = this.THREE
+
+    const leftPts = this.parseCoords(leftCoords)
+    const rightPts = this.parseCoords(rightCoords)
+    const newPts = [...leftPts, ...rightPts.slice().reverse()]
+
+    const overlaps: number[] = []
+
+    for (const [id, entry] of this.laneletMeshes) {
+      if (id === excludeId) continue
+
+      // 获取已有 Lanelet 的顶点(XY 平面)
+      const existingPts = this.getLaneletPolygonVertices(entry)
+      if (existingPts.length < 3) continue
+
+      // 检查新多边形的顶点是否在已有多边形内
+      for (const p of newPts) {
+        if (this.pointInPolygon(p.x, p.y, existingPts)) {
+          overlaps.push(id)
+          break
+        }
+      }
+      // 也检查已有多边形的顶点是否在新多边形内
+      if (!overlaps.includes(id)) {
+        // 新多边形顶点列表
+        const newPolyPts = newPts.map(p => ({ x: p.x, y: p.y }))
+        for (const ep of existingPts) {
+          if (this.pointInPolygon(ep.x, ep.y, newPolyPts)) {
+            overlaps.push(id)
+            break
+          }
+        }
+      }
+    }
+
+    return overlaps
+  }
+
+  /** 从 LaneletMesh 条目提取多边形 XY 顶点列表 */
+  private getLaneletPolygonVertices(entry: LaneletMesh): { x: number; y: number }[] {
+    if (!entry.geometry?.attributes?.position) return []
+    const pos = entry.geometry.attributes.position
+    const pts: { x: number; y: number }[] = []
+    for (let i = 0; i < pos.count; i++) {
+      pts.push({ x: pos.getX(i), y: pos.getY(i) })
+    }
+    return pts
+  }
+
+  /**
+   * 射线法判断点是否在多边形内(XY 平面)
+   */
+  private pointInPolygon(x: number, y: number, polygon: { x: number; y: number }[]): boolean {
+    let inside = false
+    const n = polygon.length
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+      const xi = polygon[i].x, yi = polygon[i].y
+      const xj = polygon[j].x, yj = polygon[j].y
+      const intersect = ((yi > y) !== (yj > y)) &&
+        (x < (xj - xi) * (y - yi) / (yj - yi) + xi)
+      if (intersect) inside = !inside
+    }
+    return inside
+  }
+
+  /**
+   * 检查新点是否与已绘制线段的任何点过近
+   * @param x 新点 X
+   * @param y 新点 Y
+   * @param z 新点 Z
+   * @param threshold 距离阈值(米)
+   * @returns 碰撞的线段内部 id,空数组表示无碰撞
+   */
+  checkPointCollision(x: number, y: number, z: number, threshold = 0.5): number[] {
+    const collisions: number[] = []
+    for (const [id, entry] of this.finishedLines) {
+      for (const p of entry.points) {
+        const dx = p[0] - x
+        const dy = p[1] - y
+        const dz = p[2] - z
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz)
+        if (dist < threshold) {
+          collisions.push(id)
+          break
+        }
+      }
+    }
+    return collisions
   }
 
   /** 点云加载/切换后通知(预留:可在此重置预览或做适配) */
@@ -729,6 +860,13 @@ export class DrawingManager {
 
   /** 添加一个锚点 */
   private addPoint(point: any): void {
+    // 碰撞检测:检查新点是否与已有线段的点过近
+    const collisions = this.checkPointCollision(point.x, point.y, point.z)
+    if (collisions.length > 0) {
+      const backendIds = collisions.map(id => this.lineIdMap?.get(id) ?? id)
+      console.warn(`[DrawingManager] 点碰撞!距离已有线段 #${backendIds.join(', #')} 过近(< 0.5m)`)
+    }
+
     this.points.push(point.clone())
     const mesh = new this.THREE.Mesh(this.anchorGeometry, this.anchorMaterial)
     mesh.position.copy(point)
