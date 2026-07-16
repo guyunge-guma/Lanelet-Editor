@@ -431,8 +431,11 @@ export class DrawingManager {
     }
     shape.closePath()
 
-    const geometry = new THREE.ShapeGeometry(shape)
-    // ShapeGeometry 生成在 XY 平面(z=0),将所有顶点 Z 抬到边界平均高度
+    // 用 ShapeBufferGeometry 而非 ShapeGeometry:
+    // THREE.js r124 中 ShapeGeometry 继承旧版 Geometry(有 vertices 无 attributes),
+    // ShapeBufferGeometry 继承 BufferGeometry(有 attributes.position)
+    const geometry = new THREE.ShapeBufferGeometry(shape)
+    // ShapeBufferGeometry 生成在 XY 平面(z=0),将所有顶点 Z 抬到边界平均高度
     const positions = geometry.attributes.position
     if (positions) {
       for (let i = 0; i < positions.count; i++) {
