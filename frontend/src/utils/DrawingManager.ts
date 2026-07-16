@@ -102,8 +102,19 @@ export const REGULATORY_TYPE_LABELS: Record<string, string> = {
 export const TRAFFIC_LIGHT_STATE_COLORS: Record<string, number> = {
   red: 0xff0000,
   yellow: 0xffaa00,
-  green: 0x00cc00,
-  unknown: 0xcccccc,
+  green: 0x00ff00,
+}
+
+/** 撤销/重做历史记录条目 */
+export interface HistoryEntry {
+  /** 操作类型 */
+  type: 'add_point' | 'finish_line' | 'delete_line' | 'add_lanelet' | 'delete_lanelet' | 'set_direction' | 'batch_delete' | 'batch_type'
+  /** 人类可读描述 */
+  description: string
+  /** 撤销操作 */
+  undo: () => void
+  /** 重做操作 */
+  redo: () => void
 }
 
 /** 预览线缓冲区最大点数(足够绘制超长折线) */
@@ -204,6 +215,20 @@ export class DrawingManager {
   /** 当前鼠标位置(用于预览线末端) */
   private currentMousePos: any = null
 
+  // ---------------- 吸附(Snapping) ----------------
+  /** 是否启用吸附 */
+  private snapEnabled = false
+  /** 吸附阈值(米) */
+  private snapThreshold = 1.5
+  /** 当前吸附目标点(吸附生效时非 null) */
+  private snapTarget: any = null
+  /** 吸附指示器(高亮球体) */
+  private snapIndicator: any = null
+  /** 吸附指示器几何体(复用) */
+  private snapIndicatorGeometry: any = null
+  /** 吸附指示器材质(复用) */
+  private snapIndicatorMaterial: any = null
+
   /** 共享的锚点几何体 / 材质(绘制期间复用,退出时统一释放) */
   private anchorGeometry: any = null
   private anchorMaterial: any = null
@@ -246,11 +271,20 @@ export class DrawingManager {
   private mouseDownX = 0
   private mouseDownY = 0
 
+  // ---------------- 撤销/重做历史栈 ----------------
+  private undoStack: HistoryEntry[] = []
+  private redoStack: HistoryEntry[] = []
+  private static readonly MAX_HISTORY = 50
+  /** 历史栈变化时触发,通知 UI 更新按钮状态 */
+  onHistoryChanged?: () => void
+
   // ---------------- 回调(单一订阅者) ----------------
   /** 锚点添加时触发,参数为当前所有锚点的扁平坐标 [x0,y0,z0,...] */
   onPointAdded?: (points: number[]) => void
   /** 线段完成时触发,携带内部 id 供宿主做后端持久化映射 */
   onLineFinished?: (coords: number[], type: string, subtype: string, id: number) => void
+  /** 线段被删除时触发(撤销/重做也会调用) */
+  onLineDeleted?: (id: number) => void
   /** 点碰撞或区域碰撞时触发,参数为提示消息 */
   onCollision?: (message: string) => void
   /** 绘制模式切换时触发 */
@@ -262,6 +296,57 @@ export class DrawingManager {
    * 用于红绿灯放置等"点击取点"场景。
    */
   onPointPicked?: (pos: MousePos) => void
+
+  // ---------------- 撤销/重做公共方法 ----------------
+
+  /** 记录一个操作到历史栈(清空 redoStack) */
+  pushHistory(entry: HistoryEntry): void {
+    this.undoStack.push(entry)
+    // 限制栈大小
+    if (this.undoStack.length > DrawingManager.MAX_HISTORY) {
+      this.undoStack.shift()
+    }
+    this.redoStack = []
+    this.onHistoryChanged?.()
+  }
+
+  /** 执行撤销,返回是否成功 */
+  undo(): boolean {
+    const entry = this.undoStack.pop()
+    if (!entry) return false
+    try {
+      entry.undo()
+    } catch (e) {
+      console.error('[DrawingManager] undo failed:', e)
+    }
+    this.redoStack.push(entry)
+    this.onHistoryChanged?.()
+    return true
+  }
+
+  /** 执行重做,返回是否成功 */
+  redo(): boolean {
+    const entry = this.redoStack.pop()
+    if (!entry) return false
+    try {
+      entry.redo()
+    } catch (e) {
+      console.error('[DrawingManager] redo failed:', e)
+    }
+    this.undoStack.push(entry)
+    this.onHistoryChanged?.()
+    return true
+  }
+
+  get canUndo(): boolean { return this.undoStack.length > 0 }
+  get canRedo(): boolean { return this.redoStack.length > 0 }
+
+  /** 清空历史栈 */
+  clearHistory(): void {
+    this.undoStack = []
+    this.redoStack = []
+    this.onHistoryChanged?.()
+  }
 
   constructor(viewer: any, THREE: any) {
     this.viewer = viewer
@@ -386,6 +471,10 @@ export class DrawingManager {
     this.previewLineMaterial = null
     this.previewPositions = null
 
+    // 清理吸附指示器
+    this.hideSnapIndicator()
+    this.disposeSnapIndicator()
+
     // 恢复 Potree 相机交互
     this.enablePotreeNavigation()
 
@@ -402,6 +491,7 @@ export class DrawingManager {
       // 锚点共用 geometry/material,这里不单独 dispose
     }
     this.updatePreview()
+    this.hideSnapIndicator()
     this.onPointAdded?.(this.getFlatCoords())
   }
 
@@ -449,6 +539,31 @@ export class DrawingManager {
       coords,
     })
 
+    // 记录到历史栈
+    const savedType = this.currentType
+    const savedSubtype = this.currentSubtype
+    this.pushHistory({
+      type: 'finish_line',
+      description: `完成线段 #${id}`,
+      undo: () => {
+        // 撤销: 移除线段(不通知后端,仅前端)
+        this.safeRemoveFromScene(line)
+        this.safeDispose(geometry, 'undo.geometry')
+        this.safeDispose(material, 'undo.material')
+        this.finishedLines.delete(id)
+        this.onLineDeleted?.(id)
+      },
+      redo: () => {
+        // 重做: 重新添加
+        this.threeScene.add(line)
+        this.finishedLines.set(id, {
+          id, line, geometry, material,
+          type: savedType, subtype: savedSubtype, coords,
+        })
+        this.onLineFinished?.(coords, savedType, savedSubtype, id)
+      },
+    })
+
     // 清空当前未完成线,保留绘制模式以便继续画下一条
     this.clearCurrentDrawing()
 
@@ -467,10 +582,46 @@ export class DrawingManager {
   removeFinishedLine(id: number): void {
     const entry = this.finishedLines.get(id)
     if (!entry) return
+
+    // 保存副本用于撤销
+    const savedEntry = { ...entry }
     this.safeRemoveFromScene(entry.line)
     this.safeDispose(entry.geometry, 'finishedLine.geometry')
     this.safeDispose(entry.material, 'finishedLine.material')
     this.finishedLines.delete(id)
+
+    // 记录到历史栈
+    this.pushHistory({
+      type: 'delete_line',
+      description: `删除线段 #${id}`,
+      undo: () => {
+        // 撤销: 重新创建线段
+        const geometry = new this.THREE.BufferGeometry().setFromPoints(
+          this.parseCoords(savedEntry.coords)
+        )
+        const material = new this.THREE.LineBasicMaterial({
+          color: TYPE_COLORS[savedEntry.type] ?? 0x00ff00,
+          linewidth: 2,
+        })
+        const line = new this.THREE.Line(geometry, material)
+        line.renderOrder = 999
+        this.threeScene.add(line)
+        this.finishedLines.set(id, {
+          id, line, geometry, material,
+          type: savedEntry.type, subtype: savedEntry.subtype, coords: savedEntry.coords,
+        })
+        this.onLineFinished?.(savedEntry.coords, savedEntry.type, savedEntry.subtype, id)
+      },
+      redo: () => {
+        const e = this.finishedLines.get(id)
+        if (!e) return
+        this.safeRemoveFromScene(e.line)
+        this.safeDispose(e.geometry, 'redo.geometry')
+        this.safeDispose(e.material, 'redo.material')
+        this.finishedLines.delete(id)
+        this.onLineDeleted?.(id)
+      },
+    })
   }
 
   /** 清空所有已完成的线段 */
@@ -483,6 +634,45 @@ export class DrawingManager {
   /** 获取已完成线段数量 */
   getFinishedCount(): number {
     return this.finishedLines.size
+  }
+
+  /**
+   * 更新指定线段的颜色(批量改类型时调用)
+   * @param id 线段内部 id
+   * @param color Three.js 颜色值(0xRRGGBB)
+   */
+  updateLineColor(id: number, color: number): void {
+    const entry = this.finishedLines.get(id)
+    if (!entry) return
+    entry.material.color.setHex(color)
+    entry.material.needsUpdate = true
+  }
+
+  /**
+   * 批量更新线段颜色
+   * @param ids 线段内部 id 数组
+   * @param colors 与 ids 一一对应的颜色值数组(0xRRGGBB)
+   */
+  batchUpdateLineColors(ids: number[], colors: number[]): void {
+    for (let i = 0; i < ids.length; i++) {
+      this.updateLineColor(ids[i], colors[i])
+    }
+  }
+
+  /**
+   * 更新指定线段的类型与子类型(同步更新颜色与内部记录)
+   * @param id 线段内部 id
+   * @param type 新类型
+   * @param subtype 新子类型
+   */
+  updateLineType(id: number, type: string, subtype: string): void {
+    const entry = this.finishedLines.get(id)
+    if (!entry) return
+    entry.type = type
+    entry.subtype = subtype
+    const color = TYPE_COLORS[type] ?? 0x00ff00
+    entry.material.color.setHex(color)
+    entry.material.needsUpdate = true
   }
 
   // ============================================================
@@ -750,6 +940,11 @@ export class DrawingManager {
     if (this.previewLine?.material) {
       this.previewLine.material.depthTest = onTop
       this.previewLine.material.needsUpdate = true
+    }
+    // 吸附指示器
+    if (this.snapIndicator?.material) {
+      this.snapIndicator.material.depthTest = !onTop
+      this.snapIndicator.material.needsUpdate = true
     }
   }
 
@@ -1079,9 +1274,42 @@ export class DrawingManager {
     this.enablePotreeNavigation()
   }
 
+  /** 当前是否处于绘制模式 */
+  getIsDrawing(): boolean {
+    return this.isDrawing
+  }
+
   /** 当前是否处于拾取模式 */
   isPickMode(): boolean {
     return this.isPicking
+  }
+
+  // ============================================================
+  //  吸附(Snapping)公开 API
+  // ============================================================
+
+  /** 开启/关闭吸附 */
+  setSnapEnabled(enabled: boolean): void {
+    this.snapEnabled = enabled
+    if (!enabled) {
+      this.snapTarget = null
+      this.hideSnapIndicator()
+    }
+  }
+
+  /** 获取吸附开关状态 */
+  isSnapEnabled(): boolean {
+    return this.snapEnabled
+  }
+
+  /** 设置吸附阈值(米) */
+  setSnapThreshold(threshold: number): void {
+    this.snapThreshold = Math.max(0.1, threshold)
+  }
+
+  /** 获取当前吸附阈值 */
+  getSnapThreshold(): number {
+    return this.snapThreshold
   }
 
   /**
@@ -1216,6 +1444,8 @@ export class DrawingManager {
   dispose(): void {
     this.stopPicking()
     this.stopDrawing()
+    // 确保吸附指示器已释放(stopDrawing 中已处理,此处兜底)
+    this.disposeSnapIndicator()
     this.clearAllFinishedLines()
     this.clearAllLaneletMeshes()
     this.clearAllTrafficLightMeshes()
@@ -1248,8 +1478,22 @@ export class DrawingManager {
       this.lastHoverTime = now
       const point = this.pickPoint(event)
       if (point) {
-        this.currentMousePos = point
+        // 吸附预览:如果开启吸附,尝试吸附当前鼠标位置
+        // 预览时不做点云法向量估计(includePointcloud=false)以保持流畅
+        let previewPoint = point
+        if (this.snapEnabled) {
+          previewPoint = this.snapPoint(point, false)
+          if (this.snapTarget) {
+            this.showSnapIndicator(this.snapTarget)
+          } else {
+            this.hideSnapIndicator()
+          }
+        }
+        this.currentMousePos = previewPoint
+        // 状态栏显示原始拾取坐标(非吸附后坐标)
         this.onMouseMove?.({ x: point.x, y: point.y, z: point.z })
+      } else {
+        this.hideSnapIndicator()
       }
       this.updatePreview()
       // 不调用 stopImmediatePropagation,让 Potree 的导航事件正常工作
@@ -1364,44 +1608,431 @@ export class DrawingManager {
   }
 
   // ============================================================
+  //  吸附(Snapping)内部实现
+  // ============================================================
+
+  /**
+   * 执行吸附,返回吸附后的点
+   *
+   * 按优先级依次尝试:
+   *   1. 已有线段端点(首尾点)
+   *   2. 已有线段中间点
+   *   3. 点云表面(局部法向量估计 + 投影)
+   *
+   * 若所有策略均未命中,返回原始点并清除 snapTarget。
+   *
+   * @param originalPoint 拾取到的原始点
+   * @param includePointcloud 是否包含点云表面吸附(预览时可关闭以提升性能)
+   */
+  private snapPoint(originalPoint: any, includePointcloud: boolean = true): any {
+    const THREE = this.THREE
+    if (!THREE) {
+      this.snapTarget = null
+      return originalPoint
+    }
+
+    // 策略 1:线段端点(最高优先级)
+    let result = this.snapToLineEndpoints(originalPoint)
+    if (result) {
+      this.snapTarget = result
+      return result
+    }
+
+    // 策略 2:线段中间点
+    result = this.snapToLineMidpoints(originalPoint)
+    if (result) {
+      this.snapTarget = result
+      return result
+    }
+
+    // 策略 3:点云表面(法向量估计)
+    if (includePointcloud) {
+      result = this.snapToPointcloudSurface(originalPoint)
+      if (result) {
+        this.snapTarget = result
+        return result
+      }
+    }
+
+    // 无吸附目标
+    this.snapTarget = null
+    return originalPoint
+  }
+
+  /**
+   * 策略 1:检查与所有 finishedLines 首尾点的距离
+   * @returns 最近的端点(在阈值内),或 null
+   */
+  private snapToLineEndpoints(point: any): any | null {
+    const THREE = this.THREE
+    let best: any = null
+    let bestDist = this.snapThreshold
+
+    for (const entry of this.finishedLines.values()) {
+      const coords = entry.coords
+      if (coords.length < 3) continue
+      // 首点(idx=0)和尾点(idx=len-3)
+      const indices = [0, coords.length - 3]
+      for (const idx of indices) {
+        if (idx < 0) continue
+        const dx = coords[idx] - point.x
+        const dy = coords[idx + 1] - point.y
+        const dz = coords[idx + 2] - point.z
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz)
+        if (dist < bestDist) {
+          bestDist = dist
+          best = new THREE.Vector3(coords[idx], coords[idx + 1], coords[idx + 2])
+        }
+      }
+    }
+    return best
+  }
+
+  /**
+   * 策略 2:检查与所有 finishedLines 中间点的距离
+   * (跳过首尾点,仅检查中间顶点)
+   * @returns 最近的中间点(在阈值内),或 null
+   */
+  private snapToLineMidpoints(point: any): any | null {
+    const THREE = this.THREE
+    let best: any = null
+    let bestDist = this.snapThreshold
+
+    for (const entry of this.finishedLines.values()) {
+      const coords = entry.coords
+      // 跳过首点(idx=0)和尾点(idx=len-3),仅检查中间点
+      for (let i = 3; i < coords.length - 3; i += 3) {
+        const dx = coords[i] - point.x
+        const dy = coords[i + 1] - point.y
+        const dz = coords[i + 2] - point.z
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz)
+        if (dist < bestDist) {
+          bestDist = dist
+          best = new THREE.Vector3(coords[i], coords[i + 1], coords[i + 2])
+        }
+      }
+    }
+    return best
+  }
+
+  /**
+   * 策略 3:点云表面吸附
+   *
+   * 在拾取点附近搜索 K 个最近点云点,用 PCA 计算局部法向量,
+   * 将拾取点投影到局部平面。
+   *
+   * 性能优化:
+   *   - 采样点云(每隔 step 个点取一个),限制最大检查点数
+   *   - 仅在半径 snapThreshold 内搜索邻居
+   *
+   * @returns 投影后的点,或 null(邻居不足/投影距离过大)
+   */
+  private snapToPointcloudSurface(point: any): any | null {
+    const THREE = this.THREE
+    if (!THREE || !this.viewer) return null
+
+    const pointclouds = this.viewer.scene?.pointclouds
+    if (!pointclouds || pointclouds.length === 0) return null
+
+    const searchRadius = this.snapThreshold
+    const maxNeighbors = 30
+    // 限制采样点数,避免遍历数百万点导致卡顿
+    const maxSamplePoints = 50000
+
+    const neighbors: { x: number; y: number; z: number; dist: number }[] = []
+
+    for (const pc of pointclouds) {
+      if (!pc) continue
+      try {
+        const geometry = pc.geometry
+        if (!geometry?.attributes?.position) continue
+        const positions = geometry.attributes.position
+        const count = positions.count
+        // 采样步长:确保最多检查 maxSamplePoints 个点
+        const step = Math.max(1, Math.floor(count / maxSamplePoints))
+
+        // 获取世界变换矩阵
+        const m = pc.matrixWorld
+        const e = m?.elements
+        if (!e) continue
+
+        // 直接访问 typed array 提升性能
+        const arr = positions.array
+        const itemSize = positions.itemSize || 3
+
+        for (let i = 0; i < count; i += step) {
+          const base = i * itemSize
+          const x = arr[base]
+          const y = arr[base + 1]
+          const z = arr[base + 2]
+          // 变换到世界坐标
+          const wx = e[0] * x + e[4] * y + e[8] * z + e[12]
+          const wy = e[1] * x + e[5] * y + e[9] * z + e[13]
+          const wz = e[2] * x + e[6] * y + e[10] * z + e[14]
+
+          const dx = wx - point.x
+          const dy = wy - point.y
+          const dz = wz - point.z
+          const distSq = dx * dx + dy * dy + dz * dz
+          if (distSq < searchRadius * searchRadius) {
+            neighbors.push({ x: wx, y: wy, z: wz, dist: Math.sqrt(distSq) })
+          }
+        }
+      } catch {
+        // 单个点云访问异常,静默跳过
+      }
+    }
+
+    // 邻居不足,无法拟合平面
+    if (neighbors.length < 3) return null
+
+    // 取 K 个最近邻居
+    neighbors.sort((a, b) => a.dist - b.dist)
+    const k = Math.min(maxNeighbors, neighbors.length)
+    const used = neighbors.slice(0, k)
+
+    // PCA:计算质心和协方差矩阵
+    let cx = 0, cy = 0, cz = 0
+    for (const p of used) {
+      cx += p.x; cy += p.y; cz += p.z
+    }
+    cx /= k; cy /= k; cz /= k
+
+    let xx = 0, xy = 0, xz = 0, yy = 0, yz = 0, zz = 0
+    for (const p of used) {
+      const dx = p.x - cx
+      const dy = p.y - cy
+      const dz = p.z - cz
+      xx += dx * dx; xy += dx * dy; xz += dx * dz
+      yy += dy * dy; yz += dy * dz; zz += dz * dz
+    }
+    xx /= k; xy /= k; xz /= k; yy /= k; yz /= k; zz /= k
+
+    // 计算最小特征值对应的特征向量(即局部法向量)
+    const normal = this.computeSmallestEigenvector(xx, xy, xz, yy, yz, zz)
+    if (!normal) return null
+
+    const nx = normal[0]
+    const ny = normal[1]
+    const nz = normal[2]
+
+    // 将原始点投影到局部平面(过质心,法向量为 normal)
+    const d = (point.x - cx) * nx + (point.y - cy) * ny + (point.z - cz) * nz
+    // 投影距离过大则放弃(避免将点拉到不合理的表面)
+    if (Math.abs(d) > searchRadius) return null
+
+    return new THREE.Vector3(
+      point.x - d * nx,
+      point.y - d * ny,
+      point.z - d * nz,
+    )
+  }
+
+  /**
+   * 计算 3x3 对称矩阵最小特征值对应的特征向量
+   *
+   * 使用幂迭代法找到最大特征向量,然后通过压缩(deflation)找到次大,
+   * 两者的叉积即为最小特征向量方向(即局部平面的法向量)。
+   *
+   * 矩阵形式:
+   *   | xx xy xz |
+   *   | xy yy yz |
+   *   | xz yz zz |
+   */
+  private computeSmallestEigenvector(
+    xx: number, xy: number, xz: number,
+    yy: number, yz: number, zz: number,
+  ): [number, number, number] | null {
+    const matmul = (v: [number, number, number]): [number, number, number] => [
+      xx * v[0] + xy * v[1] + xz * v[2],
+      xy * v[0] + yy * v[1] + yz * v[2],
+      xz * v[0] + yz * v[1] + zz * v[2],
+    ]
+
+    // ---- 幂迭代求最大特征向量 v1 ----
+    let v1: [number, number, number] = [1, 0, 0]
+    for (let iter = 0; iter < 50; iter++) {
+      const r = matmul(v1)
+      const len = Math.sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2])
+      if (len < 1e-12) {
+        // 退化情况:换一个初始向量
+        v1 = [0, 1, 0]
+        const r2 = matmul(v1)
+        const len2 = Math.sqrt(r2[0] * r2[0] + r2[1] * r2[1] + r2[2] * r2[2])
+        if (len2 < 1e-12) return null
+        v1 = [r2[0] / len2, r2[1] / len2, r2[2] / len2]
+        continue
+      }
+      const newV1: [number, number, number] = [r[0] / len, r[1] / len, r[2] / len]
+      const diff = Math.abs(newV1[0] - v1[0]) + Math.abs(newV1[1] - v1[1]) + Math.abs(newV1[2] - v1[2])
+      v1 = newV1
+      if (diff < 1e-8) break
+    }
+
+    // 特征值 lambda1 = v1^T M v1
+    const mv1 = matmul(v1)
+    const lambda1 = v1[0] * mv1[0] + v1[1] * mv1[1] + v1[2] * mv1[2]
+
+    // ---- 压缩(deflation):M' = M - lambda1 * v1 * v1^T ----
+    const dxx = xx - lambda1 * v1[0] * v1[0]
+    const dxy = xy - lambda1 * v1[0] * v1[1]
+    const dxz = xz - lambda1 * v1[0] * v1[2]
+    const dyy = yy - lambda1 * v1[1] * v1[1]
+    const dyz = yz - lambda1 * v1[1] * v1[2]
+    const dzz = zz - lambda1 * v1[2] * v1[2]
+
+    const matmulDeflated = (v: [number, number, number]): [number, number, number] => [
+      dxx * v[0] + dxy * v[1] + dxz * v[2],
+      dxy * v[0] + dyy * v[1] + dyz * v[2],
+      dxz * v[0] + dyz * v[1] + dzz * v[2],
+    ]
+
+    // ---- 幂迭代求次大特征向量 v2(在压缩后的矩阵上) ----
+    // 初始向量需与 v1 正交
+    let v2: [number, number, number] = [0, 1, 0]
+    let dot = v2[0] * v1[0] + v2[1] * v1[1] + v2[2] * v1[2]
+    v2 = [v2[0] - dot * v1[0], v2[1] - dot * v1[1], v2[2] - dot * v1[2]]
+    let len2 = Math.sqrt(v2[0] * v2[0] + v2[1] * v2[1] + v2[2] * v2[2])
+    if (len2 < 1e-10) {
+      v2 = [0, 0, 1]
+      dot = v2[0] * v1[0] + v2[1] * v1[1] + v2[2] * v1[2]
+      v2 = [v2[0] - dot * v1[0], v2[1] - dot * v1[1], v2[2] - dot * v1[2]]
+      len2 = Math.sqrt(v2[0] * v2[0] + v2[1] * v2[1] + v2[2] * v2[2])
+      if (len2 < 1e-10) return null
+    }
+    v2 = [v2[0] / len2, v2[1] / len2, v2[2] / len2]
+
+    for (let iter = 0; iter < 50; iter++) {
+      const r = matmulDeflated(v2)
+      // 重新正交化 against v1
+      const d = r[0] * v1[0] + r[1] * v1[1] + r[2] * v1[2]
+      const rOrtho: [number, number, number] = [
+        r[0] - d * v1[0], r[1] - d * v1[1], r[2] - d * v1[2],
+      ]
+      const len = Math.sqrt(rOrtho[0] * rOrtho[0] + rOrtho[1] * rOrtho[1] + rOrtho[2] * rOrtho[2])
+      if (len < 1e-12) break
+      const newV2: [number, number, number] = [rOrtho[0] / len, rOrtho[1] / len, rOrtho[2] / len]
+      const diff = Math.abs(newV2[0] - v2[0]) + Math.abs(newV2[1] - v2[1]) + Math.abs(newV2[2] - v2[2])
+      v2 = newV2
+      if (diff < 1e-8) break
+    }
+
+    // ---- 最小特征向量 = v1 × v2 ----
+    const normal: [number, number, number] = [
+      v1[1] * v2[2] - v1[2] * v2[1],
+      v1[2] * v2[0] - v1[0] * v2[2],
+      v1[0] * v2[1] - v1[1] * v2[0],
+    ]
+
+    const nlen = Math.sqrt(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2])
+    if (nlen < 1e-10) return null
+
+    return [normal[0] / nlen, normal[1] / nlen, normal[2] / nlen]
+  }
+
+  /** 创建吸附指示器(黄色发光球体,比锚点更大) */
+  private createSnapIndicator(): any {
+    const THREE = this.THREE
+    if (!THREE) return null
+    // 比锚点(0.3m)更大,更显眼
+    const radius = 0.5
+    this.snapIndicatorGeometry = new THREE.SphereGeometry(radius, 20, 20)
+    this.snapIndicatorMaterial = new THREE.MeshBasicMaterial({
+      color: 0xffdd00, // 黄色
+      transparent: true,
+      opacity: 0.85,
+      depthTest: false,
+    })
+    const mesh = new THREE.Mesh(this.snapIndicatorGeometry, this.snapIndicatorMaterial)
+    mesh.renderOrder = 1001 // 比锚点(1000)更高
+    mesh.visible = false
+    this.threeScene.add(mesh)
+    return mesh
+  }
+
+  /** 在指定位置显示吸附指示器 */
+  private showSnapIndicator(pos: any): void {
+    if (!this.snapIndicator) {
+      this.snapIndicator = this.createSnapIndicator()
+    }
+    if (this.snapIndicator) {
+      this.snapIndicator.position.copy(pos)
+      this.snapIndicator.visible = true
+    }
+  }
+
+  /** 隐藏吸附指示器 */
+  private hideSnapIndicator(): void {
+    if (this.snapIndicator) {
+      this.snapIndicator.visible = false
+    }
+  }
+
+  /** 释放吸附指示器资源 */
+  private disposeSnapIndicator(): void {
+    if (this.snapIndicator) {
+      this.safeRemoveFromScene(this.snapIndicator)
+      this.snapIndicator = null
+    }
+    this.safeDispose(this.snapIndicatorGeometry, 'snapIndicatorGeometry')
+    this.snapIndicatorGeometry = null
+    this.safeDispose(this.snapIndicatorMaterial, 'snapIndicatorMaterial')
+    this.snapIndicatorMaterial = null
+    this.snapTarget = null
+  }
+
+  // ============================================================
   //  内部方法
   // ============================================================
 
   /** 添加一个锚点 */
   private addPoint(point: any): void {
-    // 碰撞检测:检查新点是否与已有线段的点过近(阈值 1.0m)
-    const collisions = this.checkPointCollision(point.x, point.y, point.z, 1.0)
+    // 吸附:如果开启吸附,尝试吸附到最近的线段端点/中间点/点云表面
+    let finalPoint = point
+    if (this.snapEnabled) {
+      finalPoint = this.snapPoint(point)
+    }
+    const snapped = this.snapEnabled && this.snapTarget !== null
 
-    // 也检查当前正在绘制的线的已有锚点
-    for (let i = 0; i < this.points.length; i++) {
-      const p = this.points[i]
-      const dx = p.x - point.x
-      const dy = p.y - point.y
-      const dz = p.z - point.z
-      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz)
-      if (dist < 1.0) {
-        collisions.push(-1) // -1 表示当前线
-        break
+    // 碰撞检测:检查新点是否与已有线段的点过近(阈值 1.0m)
+    // 注意:吸附是用户主动行为,吸附命中时跳过碰撞警告,避免干扰
+    if (!snapped) {
+      const collisions = this.checkPointCollision(finalPoint.x, finalPoint.y, finalPoint.z, 1.0)
+
+      // 也检查当前正在绘制的线的已有锚点
+      for (let i = 0; i < this.points.length; i++) {
+        const p = this.points[i]
+        const dx = p.x - finalPoint.x
+        const dy = p.y - finalPoint.y
+        const dz = p.z - finalPoint.z
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz)
+        if (dist < 1.0) {
+          collisions.push(-1) // -1 表示当前线
+          break
+        }
+      }
+
+      if (collisions.length > 0) {
+        const backendIds = collisions.filter(id => id !== -1).map(id => this.lineIdMap?.get(id) ?? id)
+        const msg = backendIds.length > 0
+          ? `点碰撞!距离已有线段 #${backendIds.join(', #')} 过近(< 1.0m)`
+          : '点碰撞!距离当前线段已有点过近(< 1.0m)'
+        console.warn(`[DrawingManager] ${msg}`)
+        this.onCollision?.(msg)
       }
     }
 
-    if (collisions.length > 0) {
-      const backendIds = collisions.filter(id => id !== -1).map(id => this.lineIdMap?.get(id) ?? id)
-      const msg = backendIds.length > 0
-        ? `点碰撞!距离已有线段 #${backendIds.join(', #')} 过近(< 1.0m)`
-        : '点碰撞!距离当前线段已有点过近(< 1.0m)'
-      console.warn(`[DrawingManager] ${msg}`)
-      this.onCollision?.(msg)
-    }
-
-    this.points.push(point.clone())
+    this.points.push(finalPoint.clone())
     const mesh = new this.THREE.Mesh(this.anchorGeometry, this.anchorMaterial)
-    mesh.position.copy(point)
+    mesh.position.copy(finalPoint)
     mesh.renderOrder = 1000
     this.threeScene.add(mesh)
     this.anchorMeshes.push(mesh)
     this.updatePreview()
     this.onPointAdded?.(this.getFlatCoords())
+
+    // 放置锚点后隐藏吸附指示器
+    this.hideSnapIndicator()
   }
 
   /** 更新预览线(锚点 + 当前鼠标位置) */
@@ -1436,6 +2067,7 @@ export class DrawingManager {
     this.anchorMeshes = []
     this.points = []
     this.currentMousePos = null
+    this.hideSnapIndicator()
     this.updatePreview()
   }
 

@@ -8,6 +8,17 @@
       </div>
       <!-- 浮动视图控制工具栏 -->
       <div class="view-toolbar">
+        <el-tooltip content="撤销 (Ctrl+Z)" placement="bottom">
+          <el-button size="small" :disabled="!canUndo" @click="handleUndo">
+            ↶ 撤销
+          </el-button>
+        </el-tooltip>
+        <el-tooltip content="重做 (Ctrl+Y)" placement="bottom">
+          <el-button size="small" :disabled="!canRedo" @click="handleRedo">
+            ↷ 重做
+          </el-button>
+        </el-tooltip>
+        <el-divider direction="vertical" />
         <el-tooltip content="隐藏/显示点云,仅看标注" placement="bottom">
           <el-button
             size="small"
@@ -24,6 +35,12 @@
             @click="toggleAnnotationOnTop"
           >
             {{ annotationOnTop ? '↑ 标注置顶' : '↑ 正常深度' }}
+          </el-button>
+        </el-tooltip>
+        <el-divider direction="vertical" />
+        <el-tooltip content="自动吸附到已有线段端点/点云表面" placement="bottom">
+          <el-button size="small" :type="snapEnabled ? 'primary' : 'default'" @click="toggleSnap">
+            吸附
           </el-button>
         </el-tooltip>
       </div>
@@ -65,7 +82,7 @@
           </el-radio-group>
           <!-- 使用 v-show 保持两个面板挂载,避免切换时丢失本地状态 -->
           <div v-show="elementSubTab === 'linestring'">
-            <LineStringPanel @line-finished="onLineFinished" @line-deleted="onLineDeleted" />
+            <LineStringPanel @line-finished="onLineFinished" @line-deleted="onLineDeleted" @line-updated="onLineUpdated" />
           </div>
           <div v-show="elementSubTab === 'lanelet'">
             <LaneletPanel
@@ -233,6 +250,16 @@ const exporting = ref(false)
 const annotationOnlyMode = ref(false) // 隐藏点云,仅看标注
 const annotationOnTop = ref(true)      // 标注始终穿透点云显示(默认开启)
 
+// 撤销/重做状态
+const canUndo = ref(false)
+const canRedo = ref(false)
+
+// 吸附设置(与 LineStringPanel 共享,通过 provide/inject 同步)
+const snapEnabled = ref(false)
+const snapThreshold = ref(1.5)
+provide('snapEnabled', snapEnabled)
+provide('snapThreshold', snapThreshold)
+
 // 校验结果(validateTopology / validateGeometry 直接返回 issue 数组)
 const topoResult = ref<TopologyIssue[] | null>(null)
 const geoResult = ref<GeometryIssue[] | null>(null)
@@ -336,6 +363,16 @@ function initPotree() {
       drawingManagerRef.value.onCollision = (msg: string) => {
         ElMessage.warning(msg)
       }
+      // 撤销/重做回调: 更新按钮状态
+      drawingManagerRef.value.onHistoryChanged = () => {
+        canUndo.value = drawingManagerRef.value?.canUndo ?? false
+        canRedo.value = drawingManagerRef.value?.canRedo ?? false
+      }
+      // 同步当前吸附设置到 DrawingManager
+      dm.setSnapEnabled(snapEnabled.value)
+      dm.setSnapThreshold(snapThreshold.value)
+      // 注册全局键盘快捷键
+      window.addEventListener('keydown', handleGlobalKeyDown, true)
       console.log('[Lanelet Editor] DrawingManager 初始化成功')
     }
     initDrawing()
@@ -347,6 +384,33 @@ function initPotree() {
 }
 
 // ---------------- 标注视图模式控制 ----------------
+
+/** 撤销 */
+function handleUndo(): void {
+  const ok = drawingManagerRef.value?.undo() ?? false
+  if (!ok) ElMessage.info('无可撤销操作')
+}
+
+/** 重做 */
+function handleRedo(): void {
+  const ok = drawingManagerRef.value?.redo() ?? false
+  if (!ok) ElMessage.info('无可重做操作')
+}
+
+/** 全局键盘快捷键: Ctrl+Z 撤销, Ctrl+Y / Ctrl+Shift+Z 重做(非绘制模式) */
+function handleGlobalKeyDown(e: KeyboardEvent): void {
+  // 绘制模式下不拦截(由 DrawingManager 内部处理)
+  if (drawingManagerRef.value?.getIsDrawing()) return
+  if (e.ctrlKey || e.metaKey) {
+    if (e.key === 'z' && !e.shiftKey) {
+      e.preventDefault()
+      handleUndo()
+    } else if (e.key === 'y' || (e.key === 'z' && e.shiftKey)) {
+      e.preventDefault()
+      handleRedo()
+    }
+  }
+}
 
 /** 切换"仅看标注"模式:隐藏/显示点云 */
 function toggleAnnotationOnly(): void {
@@ -373,6 +437,12 @@ function toggleAnnotationOnTop(): void {
     dm.setAnnotationOnTop(annotationOnTop.value)
   }
   ElMessage.info(annotationOnTop.value ? '标注已置顶(穿透点云显示)' : '标注恢复深度渲染')
+}
+
+/** 切换吸附开关 */
+function toggleSnap(): void {
+  snapEnabled.value = !snapEnabled.value
+  ElMessage.info(snapEnabled.value ? '已开启自动吸附' : '已关闭自动吸附')
 }
 
 // 通过名字加载点云(FileManager 触发)
@@ -490,6 +560,17 @@ async function onLineDeleted(internalId: number) {
   } catch (e) {
     // 后端可能暂不支持删除接口,前端已删除,忽略
     console.warn('[Lanelet Editor] 后端删除线段失败:', e)
+  }
+}
+
+/** 线段类型更新(批量改类型):同步 linestringsForLanelet 中的类型信息 */
+function onLineUpdated(internalId: number, type: string, subtype: string) {
+  const backendId = lineIdMap.get(internalId)
+  if (backendId === undefined) return
+  const line = linestringsForLanelet.value.find(l => l.id === backendId)
+  if (line) {
+    line.type = type
+    line.subtype = subtype
   }
 }
 
@@ -630,12 +711,21 @@ watch(trafficSubTab, (sub) => {
   drawingManagerRef.value?.stopPicking()
 })
 
+// 吸附设置变化时同步到 DrawingManager
+watch([snapEnabled, snapThreshold], () => {
+  const dm = drawingManagerRef.value
+  if (!dm) return
+  dm.setSnapEnabled(snapEnabled.value)
+  dm.setSnapThreshold(snapThreshold.value)
+})
+
 onMounted(async () => {
   initPotree()
   await refreshPointclouds()
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleGlobalKeyDown, true)
   drawingManagerRef.value?.dispose()
   drawingManagerRef.value = null
   if (viewer?.renderer) {

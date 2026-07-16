@@ -223,13 +223,21 @@ export interface LineStringItem {
   attrs: Record<string, string>
 }
 
-/** 更新指定 LineString 的坐标 / 属性 */
+/**
+ * 更新指定 LineString 的坐标 / 属性
+ * @param id LineString 后端 id
+ * @param coords 新坐标(仅改属性时传 undefined)
+ * @param attrs 新属性(仅改坐标时传 undefined)
+ */
 export async function updateLinestring(
   id: number,
-  coords: number[],
+  coords?: number[],
   attrs?: Record<string, string>,
 ) {
-  const { data } = await http.put(`/linestrings/${id}`, { coords, attrs })
+  const payload: Record<string, unknown> = {}
+  if (coords !== undefined) payload.coords = coords
+  if (attrs !== undefined) payload.attrs = attrs
+  const { data } = await http.put(`/linestrings/${id}`, payload)
   return data
 }
 
