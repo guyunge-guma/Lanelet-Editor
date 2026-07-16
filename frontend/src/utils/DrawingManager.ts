@@ -1994,10 +1994,10 @@ export class DrawingManager {
     }
     const snapped = this.snapEnabled && this.snapTarget !== null
 
-    // 碰撞检测:检查新点是否与已有线段的点过近(阈值 1.0m)
+    // 碰撞检测:检查新点是否与已有线段的点过近(阈值 0.001m)
     // 注意:吸附是用户主动行为,吸附命中时跳过碰撞警告,避免干扰
     if (!snapped) {
-      const collisions = this.checkPointCollision(finalPoint.x, finalPoint.y, finalPoint.z, 1.0)
+      const collisions = this.checkPointCollision(finalPoint.x, finalPoint.y, finalPoint.z, 0.001)
 
       // 也检查当前正在绘制的线的已有锚点
       for (let i = 0; i < this.points.length; i++) {
@@ -2006,7 +2006,7 @@ export class DrawingManager {
         const dy = p.y - finalPoint.y
         const dz = p.z - finalPoint.z
         const dist = Math.sqrt(dx * dx + dy * dy + dz * dz)
-        if (dist < 1.0) {
+        if (dist < 0.001) {
           collisions.push(-1) // -1 表示当前线
           break
         }
@@ -2015,8 +2015,8 @@ export class DrawingManager {
       if (collisions.length > 0) {
         const backendIds = collisions.filter(id => id !== -1).map(id => this.lineIdMap?.get(id) ?? id)
         const msg = backendIds.length > 0
-          ? `点碰撞!距离已有线段 #${backendIds.join(', #')} 过近(< 1.0m)`
-          : '点碰撞!距离当前线段已有点过近(< 1.0m)'
+          ? `点碰撞!距离已有线段 #${backendIds.join(', #')} 过近(< 0.001m)`
+          : '点碰撞!距离当前线段已有点过近(< 0.001m)'
         console.warn(`[DrawingManager] ${msg}`)
         this.onCollision?.(msg)
       }

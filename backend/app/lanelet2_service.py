@@ -1309,6 +1309,44 @@ class Lanelet2Service:
                         ),
                     })
 
+        # 4) 空间间隙: 两个 Lanelet 没有拓扑关系,但端点距离很近
+        #    这通常意味着用户忘记连接前驱/后继
+        GAP_THRESHOLD = 5.0  # 米
+        ll_list = list(self.map.laneletLayer)
+        for i in range(len(ll_list)):
+            ll_a = ll_list[i]
+            a_rel = relations.get(ll_a.id, {})
+            a_succ = set(a_rel.get("successor", []))
+            a_pred = set(a_rel.get("predecessor", []))
+            # 获取 a 的终点(左边界最后一个点)
+            try:
+                a_end = ll_a.leftBound[-1]
+            except (IndexError, RuntimeError):
+                continue
+            for j in range(i + 1, len(ll_list)):
+                ll_b = ll_list[j]
+                # 跳过已有拓扑关系的
+                if ll_b.id in a_succ or ll_b.id in a_pred:
+                    continue
+                b_rel = relations.get(ll_b.id, {})
+                if ll_a.id in set(b_rel.get("successor", [])) or ll_a.id in set(b_rel.get("predecessor", [])):
+                    continue
+                # 获取 b 的起点(左边界第一个点)
+                try:
+                    b_start = ll_b.leftBound[0]
+                except (IndexError, RuntimeError):
+                    continue
+                dist = ((a_end.x - b_start.x) ** 2 + (a_end.y - b_start.y) ** 2 + (a_end.z - b_start.z) ** 2) ** 0.5
+                if dist < GAP_THRESHOLD:
+                    results.append({
+                        "type": "gap",
+                        "lanelet_id": ll_a.id,
+                        "message": (
+                            f"车道 {ll_a.id} 与 {ll_b.id} 端点距离 {dist:.2f}m"
+                            f"(阈值 {GAP_THRESHOLD}m),可能需要设置拓扑关系"
+                        ),
+                    })
+
         return results
 
     # ---------- 几何校验 ----------

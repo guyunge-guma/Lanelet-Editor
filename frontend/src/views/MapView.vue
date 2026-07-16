@@ -655,6 +655,7 @@ function issueTagType(type: string): 'danger' | 'warning' | 'info' {
     case 'isolated':
     case 'dangling':
     case 'self_intersect':
+    case 'gap':
       return 'warning'
     default:
       return 'info'
@@ -667,6 +668,7 @@ function issueTypeLabel(type: string): string {
     case 'isolated': return '孤立'
     case 'dangling': return '断头'
     case 'direction_conflict': return '方向冲突'
+    case 'gap': return '空间间隙'
     case 'overlap': return '重叠'
     case 'self_intersect': return '自相交'
     case 'boundary_cross': return '边界交叉'

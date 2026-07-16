@@ -148,7 +148,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, inject, watch, onBeforeUnmount, type Ref } from 'vue'
+import { ref, computed, inject, watch, onMounted, onBeforeUnmount, type Ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   DrawingManager,
@@ -442,14 +442,19 @@ function typeLabel(type: string): string {
 let initialized = false
 async function initOnce(): Promise<void> {
   if (initialized) return
-  if (!drawingManager.value) return
   initialized = true
   // 初始化预设属性默认值
   onTypeChange(newType.value)
+  // 加载数据(不依赖 DrawingManager)
   await Promise.all([loadElements(), loadLanelets()])
 }
 
+onMounted(() => {
+  initOnce()
+})
+
 watch(drawingManagerRef, () => {
+  // DrawingManager 就绪后也尝试初始化(如果 onMounted 时还没就绪)
   initOnce()
 }, { immediate: true })
 
