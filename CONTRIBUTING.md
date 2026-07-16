@@ -5,10 +5,10 @@
 ## Development Workflow
 
 1. Fork 本仓库
-2. 从 `main` 分支创建您的特性分支: `git checkout -b feat/my-feature`
+2. 从 `master` 分支创建您的特性分支: `git checkout -b feat/my-feature`
 3. 提交您的改动
 4. 确保通过现有测试
-5. 发起 Pull Request 到 `main` 分支
+5. 发起 Pull Request 到 `master` 分支
 
 ## Branch Naming Convention
 
