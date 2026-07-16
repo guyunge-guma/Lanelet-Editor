@@ -82,7 +82,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref, provide, watch, type Ref } from 'vue'
+import { onMounted, onBeforeUnmount, ref, shallowRef, provide, watch, type Ref, markRaw } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Files } from '@element-plus/icons-vue'
 import FileManager from '../components/FileManager.vue'
@@ -120,12 +120,15 @@ const exporting = ref(false)
 
 let viewer: any = null
 // 将 viewer 暴露为响应式 ref,供子组件(如 LaneletPanel)inject 使用
-const viewerRef = ref<any>(null)
+// Potree viewer 同样使用 shallowRef,避免深度代理内部 THREE 对象
+const viewerRef = shallowRef<any>(null)
 provide('viewer', viewerRef)
 
-// DrawingManager 通过 provide 传给 LineStringPanel / LaneletPanel(响应式 ref,初始为 null,
-// Potree 初始化完成后赋值)
-const drawingManagerRef = ref<DrawingManager | null>(null)
+// DrawingManager 通过 provide 传给 LineStringPanel / LaneletPanel
+// 使用 shallowRef + markRaw: 只跟踪 null/非 null 变化,不深度代理 THREE 对象
+// (THREE.js 的事件系统和方法通过 Vue Proxy 访问时 this 绑定错乱,
+//  导致 geometry.attributes.position 返回 undefined、dispose 崩溃等)
+const drawingManagerRef = shallowRef<DrawingManager | null>(null)
 provide('drawingManager', drawingManagerRef)
 
 // 前端内部线段 id -> 后端 LineString id 的映射
@@ -181,7 +184,7 @@ function initPotree() {
     console.log('[Lanelet Editor] Potree Viewer 初始化成功')
 
     // 将 viewer 暴露给子组件
-    viewerRef.value = viewer
+    viewerRef.value = markRaw(viewer)
 
     // 初始化绘制管理器
     // three.js 可能还在异步加载中,等待最多 3 秒
@@ -196,7 +199,7 @@ function initPotree() {
         }
         return
       }
-      drawingManagerRef.value = new DrawingManager(viewer, THREE)
+      drawingManagerRef.value = markRaw(new DrawingManager(viewer, THREE))
       // 实时鼠标坐标显示(绘制/非绘制模式下均生效)
       drawingManagerRef.value.onMouseMove = (pos: MousePos | null) => {
         mousePos.value = pos
