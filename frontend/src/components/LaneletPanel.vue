@@ -298,7 +298,8 @@ function addMeshForEntry(entry: LaneletEntry): void {
   const dm = drawingManager.value
   if (!dm) return
   const color = LANELET_SUBTYPE_COLORS[subtypeOf(entry)] ?? 0x888888
-  dm.addLaneletMesh(entry.id, entry.left_coords, entry.right_coords, color, 'forward')
+  const dir = (entry.attrs?.direction === 'backward' ? 'backward' : 'forward') as 'forward' | 'backward'
+  dm.addLaneletMesh(entry.id, entry.left_coords, entry.right_coords, color, dir)
 }
 
 /** 重新构建某 Lanelet 的可视化(先移除再添加,用于颜色更新) */
@@ -434,11 +435,6 @@ async function handleCreate(): Promise<void> {
     }
     lanelets.value.push(entry)
     addMeshForEntry(entry)
-
-    // 应用用户设置的方向
-    if (newDirection.value === 'backward') {
-      drawingManager.value?.setLaneletDirection(id, 'backward')
-    }
 
     ElMessage.success(`Lanelet #${id} 已创建`)
     emit('lanelet-created', id)

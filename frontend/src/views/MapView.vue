@@ -208,6 +208,9 @@ function initPotree() {
       drawingManagerRef.value.onMouseMove = (pos: MousePos | null) => {
         mousePos.value = pos
       }
+      drawingManagerRef.value.onCollision = (msg: string) => {
+        ElMessage.warning(msg)
+      }
       console.log('[Lanelet Editor] DrawingManager 初始化成功')
     }
     initDrawing()

@@ -115,6 +115,10 @@ interface LaneletMesh {
   material: any
   /** 方向箭头 */
   arrow: any
+  /** 基础方向向量(forward 方向,用于切换方向时计算) */
+  baseDir: any // THREE.Vector3
+  /** 当前方向 */
+  direction: 'forward' | 'backward'
   /** 基础颜色(用于高亮恢复) */
   baseColor: number
   /** 基础不透明度(用于高亮恢复) */
@@ -182,6 +186,8 @@ export class DrawingManager {
   onPointAdded?: (points: number[]) => void
   /** 线段完成时触发,携带内部 id 供宿主做后端持久化映射 */
   onLineFinished?: (coords: number[], type: string, subtype: string, id: number) => void
+  /** 点碰撞或区域碰撞时触发,参数为提示消息 */
+  onCollision?: (message: string) => void
   /** 绘制模式切换时触发 */
   onModeChanged?: (isDrawing: boolean) => void
   /** 鼠标悬停在点云上时触发(坐标显示);离开点云时传 null */
@@ -496,10 +502,14 @@ export class DrawingManager {
       leftPts[leftPts.length - 1].z,
     )
     let dirVec = new THREE.Vector3().subVectors(leftEnd, leftStart)
+    // 投影到 XY 平面,避免箭头因 Z 分量朝上/下
+    dirVec.z = 0
     if (dirVec.lengthSq() < 1e-6) {
       dirVec = new THREE.Vector3(1, 0, 0)
     }
     dirVec.normalize()
+    // 保存 forward 基础方向(未取反)
+    const forwardDir = dirVec.clone()
     if (direction === 'backward') {
       dirVec.negate()
     }
@@ -538,6 +548,8 @@ export class DrawingManager {
       geometry,
       material,
       arrow,
+      baseDir: forwardDir,
+      direction,
       baseColor: color,
       baseOpacity: 0.3,
     })
@@ -602,16 +614,13 @@ export class DrawingManager {
     const entry = this.laneletMeshes.get(id)
     if (!entry || !entry.arrow || !this.THREE) return
 
-    // 获取当前箭头方向向量,取反
-    const currentDir = new this.THREE.Vector3()
-    entry.arrow.getWorldDirection(currentDir)
+    // 从 baseDir 计算:forward 用原方向,backward 取反
+    const dir = entry.baseDir.clone()
     if (direction === 'backward') {
-      currentDir.negate()
+      dir.negate()
     }
-
-    // 重新设置箭头方向(ArrowHelper.setDirection 需要归一化向量)
-    currentDir.normalize()
-    entry.arrow.setDirection(currentDir)
+    entry.arrow.setDirection(dir)
+    entry.direction = direction
   }
 
   /**
@@ -743,6 +752,7 @@ export class DrawingManager {
     }
     this.onPointAdded = undefined
     this.onLineFinished = undefined
+    this.onCollision = undefined
     this.onModeChanged = undefined
     this.onMouseMove = undefined
   }
@@ -866,7 +876,9 @@ export class DrawingManager {
     const collisions = this.checkPointCollision(point.x, point.y, point.z)
     if (collisions.length > 0) {
       const backendIds = collisions.map(id => this.lineIdMap?.get(id) ?? id)
-      console.warn(`[DrawingManager] 点碰撞!距离已有线段 #${backendIds.join(', #')} 过近(< 0.5m)`)
+      const msg = `点碰撞!距离已有线段 #${backendIds.join(', #')} 过近(< 0.5m)`
+      console.warn(`[DrawingManager] ${msg}`)
+      this.onCollision?.(msg)
     }
 
     this.points.push(point.clone())
