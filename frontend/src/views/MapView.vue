@@ -6,6 +6,27 @@
         <p>{{ initError }}</p>
         <p style="font-size:11px;margin-top:4px">请按 F12 查看 Console 获取详细信息</p>
       </div>
+      <!-- 浮动视图控制工具栏 -->
+      <div class="view-toolbar">
+        <el-tooltip content="隐藏/显示点云,仅看标注" placement="bottom">
+          <el-button
+            size="small"
+            :type="annotationOnlyMode ? 'primary' : 'default'"
+            @click="toggleAnnotationOnly"
+          >
+            {{ annotationOnlyMode ? '☰ 仅看标注' : '☰ 显示全部' }}
+          </el-button>
+        </el-tooltip>
+        <el-tooltip content="标注始终显示在点云上层(穿透显示)" placement="bottom">
+          <el-button
+            size="small"
+            :type="annotationOnTop ? 'primary' : 'default'"
+            @click="toggleAnnotationOnTop"
+          >
+            {{ annotationOnTop ? '↑ 标注置顶' : '↑ 正常深度' }}
+          </el-button>
+        </el-tooltip>
+      </div>
     </div>
 
     <!-- 左侧工具栏 -->
@@ -208,6 +229,10 @@ const mousePos = ref<MousePos | null>(null)
 const initError = ref('')
 const exporting = ref(false)
 
+// 标注视图模式
+const annotationOnlyMode = ref(false) // 隐藏点云,仅看标注
+const annotationOnTop = ref(true)      // 标注始终穿透点云显示(默认开启)
+
 // 校验结果(validateTopology / validateGeometry 直接返回 issue 数组)
 const topoResult = ref<TopologyIssue[] | null>(null)
 const geoResult = ref<GeometryIssue[] | null>(null)
@@ -319,6 +344,35 @@ function initPotree() {
     ElMessage.error(initError.value)
     console.error('[Lanelet Editor] Potree init error:', err)
   }
+}
+
+// ---------------- 标注视图模式控制 ----------------
+
+/** 切换"仅看标注"模式:隐藏/显示点云 */
+function toggleAnnotationOnly(): void {
+  annotationOnlyMode.value = !annotationOnlyMode.value
+  const v = viewerRef.value
+  if (!v) return
+  // Potree 的 pointclouds 数组每个有 visible 属性
+  // 隐藏所有点云,但保留 THREE.js 场景中的标注对象
+  for (const pc of (v.scene?.pointclouds ?? [])) {
+    pc.visible = !annotationOnlyMode.value
+  }
+  // 同时隐藏 Potree 自带的场景元素(网格等)
+  if (v.scene?.scene) {
+    v.scene.scene.visible = !annotationOnlyMode.value
+  }
+  ElMessage.info(annotationOnlyMode.value ? '已切换到标注模式(隐藏点云)' : '已恢复全部显示')
+}
+
+/** 切换"标注置顶"模式:标注材质的 depthTest 开关 */
+function toggleAnnotationOnTop(): void {
+  annotationOnTop.value = !annotationOnTop.value
+  const dm = drawingManagerRef.value
+  if (dm) {
+    dm.setAnnotationOnTop(annotationOnTop.value)
+  }
+  ElMessage.info(annotationOnTop.value ? '标注已置顶(穿透点云显示)' : '标注恢复深度渲染')
 }
 
 // 通过名字加载点云(FileManager 触发)
@@ -604,6 +658,24 @@ onBeforeUnmount(() => {
   flex: 1;
   position: relative;
   overflow: hidden;
+}
+
+.view-toolbar {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 1000;
+  display: flex;
+  gap: 6px;
+  padding: 4px 6px;
+  background: rgba(255, 255, 255, 0.85);
+  border-radius: 6px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+}
+
+.view-toolbar .el-button {
+  margin: 0;
+  font-size: 12px;
 }
 
 .sidebar {

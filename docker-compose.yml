@@ -12,20 +12,55 @@ services:
       - /opt/potreeconverter:/opt/potreeconverter:ro  # PotreeConverter(只读挂载)
     ports:
       - "8000:8000"
+    healthcheck:
+      # python:3.11-slim 无 curl,用标准库 urllib 探测 /api/health
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health',timeout=5).status==200 else 1)"
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
 
   frontend:
     build: ./frontend
     container_name: lanelet-frontend
     restart: unless-stopped
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy   # 等后端健康后再启动前端,保证 /api 反代可用
     ports:
-      - "8080:80"
+      - "80:80"
+    healthcheck:
+      # nginx:alpine 自带 busybox wget,探测自身首页
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
 
-# 卷说明: ./data 目录结构
+# 卷说明: ./data 目录结构(宿主机持久化,容器重启不丢)
 #   data/raw/          上传的原始 PCD/LAS 文件
 #   data/pointclouds/  PotreeConverter 转换后的点云(供前端加载)
-#   data/output.osm    导出的 Lanelet2 地图文件
+#   data/exports/      导出的 Lanelet2 .osm 文件
+#   data/map.json      Lanelet2 地图 JSON 持久化文件
 #
 # PotreeConverter: 由 build_potreeconverter.sh 编译到 /opt/potreeconverter/
 # 后端通过挂载调用,无需在容器内重新编译
+#
+# 端口说明:
+#   前端(nginx)  宿主机 80   -> 容器 80
+#   后端(FastAPI) 宿主机 8000 -> 容器 8000
+# 前端 nginx 已配置反向代理: /api/* 与 /pointclouds/* 转发到后端 8000

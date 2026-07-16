@@ -722,6 +722,38 @@ export class DrawingManager {
   }
 
   /**
+   * 设置所有标注的 depthTest 模式
+   * - true: 标注穿透点云显示(depthTest=false,始终可见)
+   * - false: 标注正常深度渲染(被点云遮挡)
+   */
+  setAnnotationOnTop(onTop: boolean): void {
+    // Lanelet 面片
+    for (const entry of this.laneletMeshes.values()) {
+      entry.material.depthTest = !onTop
+      entry.material.needsUpdate = true
+      for (const arrow of entry.arrows ?? []) {
+        arrow.line?.material && (arrow.line.material.depthTest = onTop)
+        arrow.cone?.material && (arrow.cone.material.depthTest = onTop)
+      }
+    }
+    // 已完成线段
+    for (const entry of this.finishedLines.values()) {
+      entry.material.depthTest = !onTop
+      entry.material.needsUpdate = true
+    }
+    // 锚点
+    for (const mesh of this.anchorMeshes) {
+      mesh.material.depthTest = !onTop
+      mesh.material.needsUpdate = true
+    }
+    // 预览线
+    if (this.previewLine?.material) {
+      this.previewLine.material.depthTest = onTop
+      this.previewLine.material.needsUpdate = true
+    }
+  }
+
+  /**
    * 切换 Lanelet 方向(forward ↔ backward)
    * 只更新箭头方向,不重建网格
    */

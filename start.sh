@@ -25,7 +25,7 @@ case "$CMD" in
     $COMPOSE up -d
     echo ""
     echo "✅ 启动成功"
-    echo "   前端: http://localhost:8080"
+    echo "   前端: http://localhost"
     echo "   后端: http://localhost:8000/api/health"
     echo "   点云目录: $DATA_DIR/pointclouds/"
     ;;
