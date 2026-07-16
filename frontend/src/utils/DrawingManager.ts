@@ -705,10 +705,12 @@ export class DrawingManager {
   checkPointCollision(x: number, y: number, z: number, threshold = 0.5): number[] {
     const collisions: number[] = []
     for (const [id, entry] of this.finishedLines) {
-      for (const p of entry.points) {
-        const dx = p[0] - x
-        const dy = p[1] - y
-        const dz = p[2] - z
+      // coords 是扁平数组 [x1,y1,z1, x2,y2,z2, ...],每 3 个数一个点
+      const coords = entry.coords
+      for (let i = 0; i < coords.length; i += 3) {
+        const dx = coords[i] - x
+        const dy = coords[i + 1] - y
+        const dz = coords[i + 2] - z
         const dist = Math.sqrt(dx * dx + dy * dy + dz * dz)
         if (dist < threshold) {
           collisions.push(id)
