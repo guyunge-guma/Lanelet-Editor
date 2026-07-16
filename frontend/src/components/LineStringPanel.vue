@@ -111,7 +111,7 @@
         <span class="color-swatch" :style="{ background: colorCss(l.type) }" />
         <div class="line-info">
           <div class="line-title">
-            #{{ l.id }}
+            #{{ lineIdMap.get(l.id) ?? l.id }}
             <span class="line-type">{{ typeLabel(l.type) }}</span>
             <span v-if="l.subtype" class="line-subtype">/ {{ subtypeLabel(l.type, l.subtype) }}</span>
           </div>
@@ -144,7 +144,12 @@ import {
   DrawingManager,
   TYPE_COLORS,
   TYPE_LABELS,
+  LINESTRING_SUBTYPE_OPTIONS as SUBTYPE_OPTIONS,
+  lineSubtypeLabel,
 } from '../utils/DrawingManager'
+
+// 从 MapView 注入 internalId → backendId 映射,用于统一显示后端 ID
+const lineIdMap = inject<Map<number, number>>('lineIdMap', new Map())
 
 /** 线段类型选项 */
 const TYPE_OPTIONS = [
@@ -154,29 +159,6 @@ const TYPE_OPTIONS = [
   { value: 'virtual', label: '虚拟线' },
   { value: 'road_border', label: '道路边界' },
 ] as const
-
-/** 各类型对应的子类型选项 */
-const SUBTYPE_OPTIONS: Record<string, { value: string; label: string }[]> = {
-  line_thin: [
-    { value: 'solid', label: '实线' },
-    { value: 'dashed', label: '虚线' },
-    { value: 'dotted', label: '点线' },
-  ],
-  line_thick: [
-    { value: 'solid', label: '实线' },
-    { value: 'dashed', label: '虚线' },
-    { value: 'dotted', label: '点线' },
-  ],
-  curbstone: [
-    { value: 'low', label: '低路沿' },
-    { value: 'high', label: '高路沿' },
-  ],
-  virtual: [],
-  road_border: [
-    { value: 'solid', label: '实线' },
-    { value: 'dashed', label: '虚线' },
-  ],
-}
 
 interface LineEntry {
   id: number
@@ -297,8 +279,7 @@ function typeLabel(type: string): string {
 }
 
 function subtypeLabel(type: string, subtype: string): string {
-  const opts = SUBTYPE_OPTIONS[type] ?? []
-  return opts.find(o => o.value === subtype)?.label ?? subtype
+  return lineSubtypeLabel(type, subtype)
 }
 
 onBeforeUnmount(() => {

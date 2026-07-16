@@ -82,7 +82,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref, shallowRef, provide, watch, type Ref, markRaw } from 'vue'
+import { onMounted, onBeforeUnmount, ref, shallowRef, reactive, provide, watch, type Ref, markRaw } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Files } from '@element-plus/icons-vue'
 import FileManager from '../components/FileManager.vue'
@@ -132,7 +132,9 @@ const drawingManagerRef = shallowRef<DrawingManager | null>(null)
 provide('drawingManager', drawingManagerRef)
 
 // 前端内部线段 id -> 后端 LineString id 的映射
-const lineIdMap = new Map<number, number>()
+// 用 reactive(Map) 使子组件能响应式读取后端 ID 用于统一显示
+const lineIdMap = reactive(new Map<number, number>())
+provide('lineIdMap', lineIdMap)
 
 // 传给 LaneletPanel 的 LineString 列表(使用后端 id,用于选择左右边界)
 interface LineStringForLanelet {

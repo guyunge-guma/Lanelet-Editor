@@ -14,7 +14,7 @@
         <el-option
           v-for="ls in linestrings"
           :key="ls.id"
-          :label="`#${ls.id} (${typeLabel(ls.type)}, ${ls.pointCount}点)`"
+          :label="`#${ls.id} (${typeLabel(ls.type)}${ls.subtype ? ' / ' + lineSubtypeLabel(ls.type, ls.subtype) : ''}, ${ls.pointCount}点)`"
           :value="ls.id"
           :disabled="ls.id === rightBoundId"
         />
@@ -32,7 +32,7 @@
         <el-option
           v-for="ls in linestrings"
           :key="ls.id"
-          :label="`#${ls.id} (${typeLabel(ls.type)}, ${ls.pointCount}点)`"
+          :label="`#${ls.id} (${typeLabel(ls.type)}${ls.subtype ? ' / ' + lineSubtypeLabel(ls.type, ls.subtype) : ''}, ${ls.pointCount}点)`"
           :value="ls.id"
           :disabled="ls.id === leftBoundId"
         />
@@ -180,6 +180,7 @@ import {
   LANELET_SUBTYPE_COLORS,
   LANELET_SUBTYPE_LABELS,
   TYPE_LABELS,
+  lineSubtypeLabel,
 } from '../utils/DrawingManager'
 import {
   createLanelet,

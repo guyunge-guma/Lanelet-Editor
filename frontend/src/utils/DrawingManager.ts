@@ -37,6 +37,35 @@ export const TYPE_LABELS: Record<string, string> = {
   road_border: '道路边界',
 }
 
+/** LineString 各类型对应的子类型选项(供两个面板共用,确保标签一致) */
+export const LINESTRING_SUBTYPE_OPTIONS: Record<string, { value: string; label: string }[]> = {
+  line_thin: [
+    { value: 'solid', label: '实线' },
+    { value: 'dashed', label: '虚线' },
+    { value: 'dotted', label: '点线' },
+  ],
+  line_thick: [
+    { value: 'solid', label: '实线' },
+    { value: 'dashed', label: '虚线' },
+    { value: 'dotted', label: '点线' },
+  ],
+  curbstone: [
+    { value: 'low', label: '低路沿' },
+    { value: 'high', label: '高路沿' },
+  ],
+  virtual: [],
+  road_border: [
+    { value: 'solid', label: '实线' },
+    { value: 'dashed', label: '虚线' },
+  ],
+}
+
+/** 查找 LineString 子类型的中文标签 */
+export function lineSubtypeLabel(type: string, subtype: string): string {
+  const opts = LINESTRING_SUBTYPE_OPTIONS[type] ?? []
+  return opts.find(o => o.value === subtype)?.label ?? subtype
+}
+
 /** Lanelet subtype -> Three.js 颜色值(0xRRGGBB) */
 export const LANELET_SUBTYPE_COLORS: Record<string, number> = {
   road: 0x00ff00, // 绿色
