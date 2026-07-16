@@ -60,7 +60,7 @@ def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "lanelet2_available": ll_service.is_available(),
-        "origin": {"lat": ll_service.origin_lat, "lon": ll_service.origin_lon},
+        "origin": ll_service.get_origin(),
         "data_dir": str(settings.data_dir),
         "potreeconverter": Path(settings.potreeconverter_path).exists(),
     }
@@ -549,6 +549,32 @@ class MapFileReq(BaseModel):
     path: str | None = None        # 为 None 时使用 settings.map_file 默认路径
 
 
+# ---- 第 5 轮: RegulatoryElement / TrafficLight / StopLine 请求模型 ----
+
+class RegulatoryElementCreateReq(BaseModel):
+    type: str                      # 'traffic_light' | 'stop_line' | 'crosswalk' | 'traffic_sign'
+    lanelet_ids: list[int] = []    # 关联的 Lanelet ID 列表
+    attrs: dict[str, str] | None = None
+
+
+class RegulatoryElementUpdateReq(BaseModel):
+    type: str | None = None
+    lanelet_ids: list[int] | None = None
+    attrs: dict[str, str] | None = None
+
+
+class TrafficLightCreateReq(BaseModel):
+    position: list[float]          # [x, y, z]
+    orientation: list[float] = [0.0, 0.0, 0.0]  # [yaw, pitch, roll]
+    lanelet_id: int | None = None  # 关联的车道
+    attrs: dict[str, str] | None = None
+
+
+class StopLineCreateReq(BaseModel):
+    linestring_id: int             # 停止线对应的 LineString ID(必须已存在)
+    lanelet_id: int | None = None  # 关联的车道
+
+
 def _is_safe_path(path: str, must_suffix: str = ".json") -> bool:
     """文件路径安全检查: 不允许路径穿越,且必须在 data_dir 内,扩展名匹配"""
     if not path:
@@ -773,18 +799,273 @@ def map_health() -> dict[str, Any]:
         "lanelet2_available": ll_service.is_available(),
         "linestring_count": len(linestrings),
         "lanelet_count": len(lanelets),
-        "origin": {"lat": ll_service.origin_lat, "lon": ll_service.origin_lon},
+        "origin": ll_service.get_origin(),
         "map_file": str(settings.map_file),
     }
 
 
 @app.post("/api/export")
-def export_osm(path: str = "/app/data/output.osm") -> dict[str, Any]:
+def export_map(req: MapFileReq | None = None) -> dict[str, Any]:
+    """导出当前地图为 Lanelet2 .osm 文件
+
+    body: { path?: string }
+    - path 为空时,输出到 data/exports/map_<timestamp>.osm
+    - path 必须位于 data_dir 内且扩展名为 .osm
+    返回: { path, filename, size, download_url }
+    """
+    body = req or MapFileReq()
+    exports_dir = settings.exports_dir
+    exports_dir.mkdir(parents=True, exist_ok=True)
+
+    if body.path:
+        if not _is_safe_path(body.path, must_suffix=".osm"):
+            raise HTTPException(
+                400, f"非法路径(必须在 data_dir 内且为 .osm 文件): {body.path}"
+            )
+        out_path = body.path
+    else:
+        filename = f"map_{int(time.time())}.osm"
+        out_path = str(exports_dir / filename)
+
     try:
-        out = ll_service.export_osm(path)
-        return {"path": out}
+        written = ll_service.export_osm(out_path)
+    except RuntimeError as e:
+        # lanelet2 未安装
+        raise HTTPException(503, str(e))
     except Exception as e:
         raise HTTPException(500, str(e))
+
+    p = Path(written)
+    return {
+        "path": str(p),
+        "filename": p.name,
+        "size": p.stat().st_size,
+        "download_url": f"/api/export/download/{p.name}",
+    }
+
+
+class ImportReq(BaseModel):
+    path: str
+
+
+@app.post("/api/import")
+def import_map(req: ImportReq) -> dict[str, Any]:
+    """导入 .osm 文件(会清空当前 map 后重建)
+
+    body: { path: string }
+    返回: { linestring_count, lanelet_count, regulatory_count }
+    """
+    if not _is_safe_path(req.path, must_suffix=".osm"):
+        raise HTTPException(
+            400, f"非法路径(必须在 data_dir 内且为 .osm 文件): {req.path}"
+        )
+    if not Path(req.path).exists():
+        raise HTTPException(404, f"文件不存在: {req.path}")
+
+    try:
+        stats = ll_service.import_osm(req.path)
+        return stats
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/export/download/{filename}")
+def download_export(filename: str) -> FileResponse:
+    """下载已导出的 .osm 文件"""
+    if not _is_safe_name(filename) or not filename.lower().endswith(".osm"):
+        raise HTTPException(400, "非法文件名")
+    path = settings.exports_dir / filename
+    if not path.exists():
+        raise HTTPException(404, f"文件不存在: {filename}")
+    return FileResponse(
+        path=str(path),
+        filename=filename,
+        media_type="application/octet-stream",
+    )
+
+
+# ---------------- 校验: 拓扑 / 几何 ----------------
+
+@app.get("/api/validate/topology")
+def validate_topology() -> dict[str, Any]:
+    """拓扑校验(孤立车道 / 断头路 / 方向冲突)"""
+    try:
+        return {"items": ll_service.validate_topology()}
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/validate/geometry")
+def validate_geometry() -> dict[str, Any]:
+    """几何校验(LineString 重叠 / 自相交 / Lanelet 左右边界交叉)"""
+    try:
+        return {"items": ll_service.validate_geometry()}
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+# ---------------- 坐标系原点配置 ----------------
+
+class OriginReq(BaseModel):
+    lat: float
+    lon: float
+    alt: float = 0.0
+
+
+@app.put("/api/config/origin")
+def set_origin(req: OriginReq) -> dict[str, Any]:
+    """设置投影原点(WGS84 经纬度 + 高程)
+
+    body: { lat, lon, alt }
+    """
+    try:
+        return ll_service.set_origin(req.lat, req.lon, req.alt)
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/config/origin")
+def get_origin() -> dict[str, Any]:
+    """获取当前投影原点 {lat, lon, alt}"""
+    return ll_service.get_origin()
+
+
+# ---------------- 第 5 轮: RegulatoryElement / TrafficLight / StopLine ----------------
+
+@app.post("/api/regulatory_elements")
+def create_regulatory_element(req: RegulatoryElementCreateReq) -> dict[str, Any]:
+    """创建 RegulatoryElement
+
+    body: { type, lanelet_ids, attrs }
+    type: 'traffic_light' | 'stop_line' | 'crosswalk' | 'traffic_sign'
+    """
+    try:
+        re_id = ll_service.add_regulatory_element(req.type, req.lanelet_ids, req.attrs)
+        return {"id": re_id}
+    except RuntimeError as e:
+        # lanelet2 未安装(降级模式)
+        raise HTTPException(503, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/regulatory_elements")
+def list_regulatory_elements() -> dict[str, Any]:
+    """列出所有 RegulatoryElement"""
+    return {"items": ll_service.list_regulatory_elements()}
+
+
+@app.get("/api/regulatory_elements/{re_id}")
+def get_regulatory_element(re_id: int) -> dict[str, Any]:
+    """获取单个 RegulatoryElement"""
+    re = ll_service.get_regulatory_element(re_id)
+    if re is None:
+        raise HTTPException(404, f"RegulatoryElement {re_id} 不存在")
+    return re
+
+
+@app.put("/api/regulatory_elements/{re_id}")
+def update_regulatory_element(re_id: int, req: RegulatoryElementUpdateReq) -> dict[str, Any]:
+    """更新 RegulatoryElement(type / lanelet_ids / attrs,null 表示不修改)"""
+    try:
+        updated = ll_service.update_regulatory_element(
+            re_id, req.type, req.lanelet_ids, req.attrs
+        )
+        if updated is None:
+            raise HTTPException(404, f"RegulatoryElement {re_id} 不存在")
+        return updated
+    except HTTPException:
+        raise
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.delete("/api/regulatory_elements/{re_id}")
+def delete_regulatory_element(re_id: int) -> dict[str, Any]:
+    """删除 RegulatoryElement"""
+    if not ll_service.delete_regulatory_element(re_id):
+        raise HTTPException(404, f"RegulatoryElement {re_id} 不存在")
+    return {"deleted": re_id}
+
+
+@app.post("/api/traffic_lights")
+def create_traffic_light(req: TrafficLightCreateReq) -> dict[str, Any]:
+    """创建红绿灯
+
+    body: { position: [x,y,z], orientation: [yaw,pitch,roll], lanelet_id?, attrs? }
+    """
+    try:
+        tl_id = ll_service.add_traffic_light(
+            req.position, req.orientation, req.lanelet_id, req.attrs
+        )
+        return {"id": tl_id}
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/traffic_lights")
+def list_traffic_lights() -> dict[str, Any]:
+    """列出所有红绿灯"""
+    return {"items": ll_service.list_traffic_lights()}
+
+
+@app.delete("/api/traffic_lights/{tl_id}")
+def delete_traffic_light(tl_id: int) -> dict[str, Any]:
+    """删除红绿灯"""
+    if not ll_service.delete_traffic_light(tl_id):
+        raise HTTPException(404, f"TrafficLight {tl_id} 不存在")
+    return {"deleted": tl_id}
+
+
+@app.post("/api/stop_lines")
+def create_stop_line(req: StopLineCreateReq) -> dict[str, Any]:
+    """创建停止线(关联一条已存在的 LineString + 可选 Lanelet)
+
+    body: { linestring_id, lanelet_id? }
+    """
+    try:
+        sl_id = ll_service.add_stop_line(req.linestring_id, req.lanelet_id)
+        return {"id": sl_id}
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/stop_lines")
+def list_stop_lines() -> dict[str, Any]:
+    """列出所有停止线"""
+    return {"items": ll_service.list_stop_lines()}
+
+
+@app.delete("/api/stop_lines/{sl_id}")
+def delete_stop_line(sl_id: int) -> dict[str, Any]:
+    """删除停止线(仅删除关联记录,不删除底层 LineString)"""
+    if not ll_service.delete_stop_line(sl_id):
+        raise HTTPException(404, f"StopLine {sl_id} 不存在")
+    return {"deleted": sl_id}
 
 
 # ---------------- 静态资源:点云目录 ----------------

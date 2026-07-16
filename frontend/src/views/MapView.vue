@@ -55,6 +55,88 @@
             />
           </div>
         </el-tab-pane>
+
+        <!-- 交通元素:红绿灯 / Regulatory Element -->
+        <el-tab-pane label="交通元素" name="traffic">
+          <el-radio-group v-model="trafficSubTab" size="small" class="element-subtabs">
+            <el-radio-button value="traffic_light">红绿灯</el-radio-button>
+            <el-radio-button value="regulatory">规则元素</el-radio-button>
+          </el-radio-group>
+          <div v-show="trafficSubTab === 'traffic_light'">
+            <TrafficLightPanel
+              @traffic-light-created="onTrafficLightCreated"
+              @traffic-light-deleted="onTrafficLightDeleted"
+            />
+          </div>
+          <div v-show="trafficSubTab === 'regulatory'">
+            <RegulatoryPanel
+              @regulatory-created="onRegulatoryCreated"
+              @regulatory-deleted="onRegulatoryDeleted"
+            />
+          </div>
+        </el-tab-pane>
+
+        <!-- 校验:拓扑 / 几何 -->
+        <el-tab-pane label="校验" name="validation">
+          <div class="validation-toolbar">
+            <el-button size="small" type="primary" @click="runTopologyValidation" :loading="topoValidating">
+              校验拓扑
+            </el-button>
+            <el-button size="small" type="primary" @click="runGeometryValidation" :loading="geoValidating">
+              校验几何
+            </el-button>
+          </div>
+
+          <!-- 拓扑校验结果 -->
+          <div class="val-section">
+            <div class="val-header">
+              <span>拓扑校验</span>
+              <el-tag v-if="topoResult" size="small" :type="topoValid ? 'success' : 'danger'">
+                {{ topoValid ? '通过' : '存在问题' }}
+              </el-tag>
+            </div>
+            <div v-if="topoResult && topoResult.length" class="issue-list">
+              <div
+                v-for="(issue, idx) in topoResult"
+                :key="'topo-' + idx"
+                class="issue-item"
+              >
+                <el-tag size="small" :type="issueTagType(issue.type)">{{ issueTypeLabel(issue.type) }}</el-tag>
+                <span class="issue-msg">{{ issue.message }}</span>
+                <span v-if="issue.lanelet_id !== undefined && issue.lanelet_id !== null" class="issue-id">
+                  #{{ issue.lanelet_id }}
+                </span>
+              </div>
+            </div>
+            <el-empty v-else-if="topoResult" description="无问题" :image-size="32" />
+            <div v-else class="val-empty">尚未执行</div>
+          </div>
+
+          <!-- 几何校验结果 -->
+          <div class="val-section">
+            <div class="val-header">
+              <span>几何校验</span>
+              <el-tag v-if="geoResult" size="small" :type="geoValid ? 'success' : 'danger'">
+                {{ geoValid ? '通过' : '存在问题' }}
+              </el-tag>
+            </div>
+            <div v-if="geoResult && geoResult.length" class="issue-list">
+              <div
+                v-for="(issue, idx) in geoResult"
+                :key="'geo-' + idx"
+                class="issue-item"
+              >
+                <el-tag size="small" :type="issueTagType(issue.type)">{{ issueTypeLabel(issue.type) }}</el-tag>
+                <span class="issue-msg">{{ issue.message }}</span>
+                <span v-if="issue.id !== undefined && issue.id !== null" class="issue-id">
+                  #{{ issue.id }}
+                </span>
+              </div>
+            </div>
+            <el-empty v-else-if="geoResult" description="无问题" :image-size="32" />
+            <div v-else class="val-empty">尚未执行</div>
+          </div>
+        </el-tab-pane>
       </el-tabs>
     </aside>
 
@@ -82,19 +164,25 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref, shallowRef, reactive, provide, watch, type Ref, markRaw } from 'vue'
+import { onMounted, onBeforeUnmount, ref, shallowRef, reactive, computed, provide, watch, type Ref, markRaw } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Files } from '@element-plus/icons-vue'
 import FileManager from '../components/FileManager.vue'
 import LineStringPanel from '../components/LineStringPanel.vue'
 import LaneletPanel from '../components/LaneletPanel.vue'
+import TrafficLightPanel from '../components/TrafficLightPanel.vue'
+import RegulatoryPanel from '../components/RegulatoryPanel.vue'
 import { DrawingManager, type MousePos } from '../utils/DrawingManager'
 import {
   listPointclouds,
   createLinestring,
   deleteLinestring,
   exportOsm,
+  validateTopology,
+  validateGeometry,
   type PointCloudItem,
+  type TopologyIssue,
+  type GeometryIssue,
 } from '../api'
 
 const getPotree = () => (window as any).Potree
@@ -111,12 +199,24 @@ const potreeContainer = ref<HTMLDivElement>()
 const activeTab = ref('files')
 // 元素子标签:LineString / Lanelet
 const elementSubTab = ref<'linestring' | 'lanelet'>('linestring')
+// 交通元素子标签:红绿灯 / 规则元素
+const trafficSubTab = ref<'traffic_light' | 'regulatory'>('traffic_light')
 const pointclouds = ref<PointCloudItem[]>([])
 const loading = ref(false)
 const currentPointcloud = ref('')
 const mousePos = ref<MousePos | null>(null)
 const initError = ref('')
 const exporting = ref(false)
+
+// 校验结果(validateTopology / validateGeometry 直接返回 issue 数组)
+const topoResult = ref<TopologyIssue[] | null>(null)
+const geoResult = ref<GeometryIssue[] | null>(null)
+const topoValidating = ref(false)
+const geoValidating = ref(false)
+
+// 是否通过(无问题)
+const topoValid = computed(() => topoResult.value !== null && topoResult.value.length === 0)
+const geoValid = computed(() => geoResult.value !== null && geoResult.value.length === 0)
 
 let viewer: any = null
 // 将 viewer 暴露为响应式 ref,供子组件(如 LaneletPanel)inject 使用
@@ -358,6 +458,87 @@ function onLaneletSelected(id: number | null) {
   selectedLaneletId.value = id
 }
 
+// ---------------- TrafficLightPanel 事件处理 ----------------
+
+function onTrafficLightCreated(id: number) {
+  console.log('[Lanelet Editor] TrafficLight 已创建:', id)
+}
+
+function onTrafficLightDeleted(id: number) {
+  console.log('[Lanelet Editor] TrafficLight 已删除:', id)
+}
+
+// ---------------- RegulatoryPanel 事件处理 ----------------
+
+function onRegulatoryCreated(id: number) {
+  console.log('[Lanelet Editor] RegulatoryElement 已创建:', id)
+}
+
+function onRegulatoryDeleted(id: number) {
+  console.log('[Lanelet Editor] RegulatoryElement 已删除:', id)
+}
+
+// ---------------- 校验 ----------------
+
+/** 运行拓扑校验 */
+async function runTopologyValidation(): Promise<void> {
+  topoValidating.value = true
+  try {
+    const res = await validateTopology()
+    topoResult.value = res
+    ElMessage.success(`拓扑校验完成: ${res.length} 个问题`)
+  } catch (e: any) {
+    console.error('[Lanelet Editor] 拓扑校验失败:', e)
+    ElMessage.error('拓扑校验失败: ' + (e?.response?.data?.detail || e?.message || ''))
+  } finally {
+    topoValidating.value = false
+  }
+}
+
+/** 运行几何校验 */
+async function runGeometryValidation(): Promise<void> {
+  geoValidating.value = true
+  try {
+    const res = await validateGeometry()
+    geoResult.value = res
+    ElMessage.success(`几何校验完成: ${res.length} 个问题`)
+  } catch (e: any) {
+    console.error('[Lanelet Editor] 几何校验失败:', e)
+    ElMessage.error('几何校验失败: ' + (e?.response?.data?.detail || e?.message || ''))
+  } finally {
+    geoValidating.value = false
+  }
+}
+
+/** 问题类型 -> el-tag type */
+function issueTagType(type: string): 'danger' | 'warning' | 'info' {
+  switch (type) {
+    case 'overlap':
+    case 'boundary_cross':
+    case 'direction_conflict':
+      return 'danger'
+    case 'isolated':
+    case 'dangling':
+    case 'self_intersect':
+      return 'warning'
+    default:
+      return 'info'
+  }
+}
+
+/** 问题类型中文标签 */
+function issueTypeLabel(type: string): string {
+  switch (type) {
+    case 'isolated': return '孤立'
+    case 'dangling': return '断头'
+    case 'direction_conflict': return '方向冲突'
+    case 'overlap': return '重叠'
+    case 'self_intersect': return '自相交'
+    case 'boundary_cross': return '边界交叉'
+    default: return type
+  }
+}
+
 /** 导出 OSM */
 async function handleExportOsm() {
   exporting.value = true
@@ -376,6 +557,11 @@ watch(activeTab, (tab) => {
   if (tab !== 'elements') {
     drawingManagerRef.value?.stopDrawing()
   }
+  // 离开"交通元素"标签时退出绘制与拾取模式(红绿灯拾取位置等)
+  if (tab !== 'traffic') {
+    drawingManagerRef.value?.stopDrawing()
+    drawingManagerRef.value?.stopPicking()
+  }
 })
 
 watch(elementSubTab, (sub) => {
@@ -383,6 +569,11 @@ watch(elementSubTab, (sub) => {
   if (sub !== 'linestring') {
     drawingManagerRef.value?.stopDrawing()
   }
+})
+
+watch(trafficSubTab, (sub) => {
+  // 切换交通元素子标签时退出拾取模式,避免事件残留
+  drawingManagerRef.value?.stopPicking()
 })
 
 onMounted(async () => {
@@ -466,6 +657,63 @@ onBeforeUnmount(() => {
 .element-subtabs :deep(.el-radio-button__inner) {
   width: 100%;
   text-align: center;
+}
+
+.validation-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.validation-toolbar .el-button {
+  flex: 1;
+}
+
+.val-section {
+  margin-bottom: 16px;
+}
+
+.val-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 500;
+  color: #303133;
+  margin-bottom: 8px;
+}
+
+.issue-list {
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.issue-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 4px 0;
+  border-bottom: 1px solid #f0f0f0;
+  font-size: 12px;
+}
+
+.issue-msg {
+  flex: 1;
+  color: #303133;
+  word-break: break-all;
+  line-height: 1.5;
+}
+
+.issue-id {
+  color: #909399;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.val-empty {
+  font-size: 12px;
+  color: #909399;
+  padding: 8px 0;
 }
 
 .status-panel {

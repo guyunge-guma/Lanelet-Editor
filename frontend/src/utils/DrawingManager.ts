@@ -82,6 +82,30 @@ export const LANELET_SUBTYPE_LABELS: Record<string, string> = {
   speed_bump: '减速带',
 }
 
+/** Regulatory Element 类型 -> Three.js 颜色值(0xRRGGBB) */
+export const REGULATORY_TYPE_COLORS: Record<string, number> = {
+  traffic_light: 0xff2222, // 红色(与红绿灯主体一致)
+  stop_line: 0xffffff, // 白色
+  crosswalk: 0xffcc00, // 黄色斑马线
+  traffic_sign: 0x2196f3, // 蓝色
+}
+
+/** Regulatory Element 类型中文标签 */
+export const REGULATORY_TYPE_LABELS: Record<string, string> = {
+  traffic_light: '红绿灯',
+  stop_line: '停止线',
+  crosswalk: '斑马线',
+  traffic_sign: '交通标志',
+}
+
+/** 红绿灯默认颜色选项 */
+export const TRAFFIC_LIGHT_STATE_COLORS: Record<string, number> = {
+  red: 0xff0000,
+  yellow: 0xffaa00,
+  green: 0x00cc00,
+  unknown: 0xcccccc,
+}
+
 /** 预览线缓冲区最大点数(足够绘制超长折线) */
 const MAX_PREVIEW_POINTS = 10000
 /** 锚点半径(米) */
@@ -125,6 +149,38 @@ interface LaneletMesh {
   baseOpacity: number
 }
 
+/** 红绿灯可视化记录(红色圆柱体 + 朝向箭头 + 顶端小球) */
+interface TrafficLightMesh {
+  /** 红绿灯后端 id */
+  id: number
+  /** 主圆柱体 Mesh */
+  mesh: any
+  /** 圆柱体几何体 */
+  geometry: any
+  /** 圆柱体材质 */
+  material: any
+  /** 朝向箭头(ArrowHelper) */
+  arrow: any
+  /** 顶端发光小球(灯泡) */
+  bulb: any
+  /** 灯泡材质 */
+  bulbMaterial: any
+  /** 基础颜色(用于高亮恢复) */
+  baseColor: number
+}
+
+/** 停止线可视化记录(粗白色线段) */
+interface StopLineMesh {
+  /** 停止线后端 id */
+  id: number
+  /** 线段对象 */
+  line: any
+  /** 几何体 */
+  geometry: any
+  /** 材质(LineBasicMaterial,较粗) */
+  material: any
+}
+
 export class DrawingManager {
   private viewer: any
   private THREE: any
@@ -160,6 +216,15 @@ export class DrawingManager {
   /** Lanelet 可视化:id -> 记录(键为后端 Lanelet id) */
   private laneletMeshes: Map<number, LaneletMesh> = new Map()
 
+  /** 红绿灯可视化:id -> 记录(键为后端 TrafficLight id) */
+  private trafficLightMeshes: Map<number, TrafficLightMesh> = new Map()
+
+  /** 停止线可视化:id -> 记录(键为后端 StopLine id) */
+  private stopLineMeshes: Map<number, StopLineMesh> = new Map()
+
+  /** 是否处于单点拾取模式(用于红绿灯放置等) */
+  private isPicking = false
+
   /** 前端内部线段 id -> 后端 LineString id 的映射(由 MapView 注入) */
   lineIdMap?: Map<number, number>
 
@@ -192,6 +257,11 @@ export class DrawingManager {
   onModeChanged?: (isDrawing: boolean) => void
   /** 鼠标悬停在点云上时触发(坐标显示);离开点云时传 null */
   onMouseMove?: (pos: MousePos | null) => void
+  /**
+   * 单点拾取模式下,左键点击命中点云时触发一次,随后自动退出拾取模式。
+   * 用于红绿灯放置等"点击取点"场景。
+   */
+  onPointPicked?: (pos: MousePos) => void
 
   constructor(viewer: any, THREE: any) {
     this.viewer = viewer
@@ -623,6 +693,328 @@ export class DrawingManager {
     entry.direction = direction
   }
 
+  // ============================================================
+  //  红绿灯可视化(Traffic Light)
+  // ============================================================
+
+  /**
+   * 添加红绿灯可视化
+   *
+   * - 红色圆柱体(直径 0.4m,高度 2.5m,模拟灯杆 + 灯箱)
+   * - 顶端发光小球(直径 0.5m,代表灯泡,颜色随 state 变化)
+   * - 朝向箭头(从圆柱顶端水平指出,表示灯面朝向)
+   *
+   * @param id 红绿灯后端 id(同 id 会先移除旧可视化)
+   * @param position 红绿灯底部世界坐标 [x, y, z]
+   * @param orientation 朝向(欧拉角,弧度)[rx, ry, rz];rz 用于水平朝向
+   * @param state 灯泡状态:red / yellow / green / unknown
+   */
+  addTrafficLightMesh(
+    id: number,
+    position: [number, number, number],
+    orientation: [number, number, number] = [0, 0, 0],
+    state: string = 'red',
+  ): void {
+    // 同 id 先移除旧的
+    this.removeTrafficLightMesh(id)
+
+    const THREE = this.THREE
+    if (!THREE || !this.viewer) return
+
+    const [x, y, z] = position
+    const POLE_HEIGHT = 2.5
+    const POLE_RADIUS = 0.15
+    const BULB_RADIUS = 0.3
+    const ARROW_LENGTH = 1.2
+
+    // 圆柱体(灯杆 + 灯箱):沿 Y 轴竖立,底部对齐 position
+    const geometry = new THREE.CylinderGeometry(POLE_RADIUS, POLE_RADIUS, POLE_HEIGHT, 16)
+    const material = new THREE.MeshBasicMaterial({
+      color: 0xff2222,
+      transparent: true,
+      opacity: 0.85,
+      depthWrite: true,
+    })
+    const mesh = new THREE.Mesh(geometry, material)
+    // CylinderGeometry 默认中心在原点,平移使底部位于 position
+    mesh.position.set(x, y, z + POLE_HEIGHT / 2)
+    mesh.renderOrder = 950
+    this.threeScene.add(mesh)
+
+    // 顶端灯泡小球
+    const bulbColor = TRAFFIC_LIGHT_STATE_COLORS[state] ?? 0xff0000
+    const bulbGeometry = new THREE.SphereGeometry(BULB_RADIUS, 16, 16)
+    const bulbMaterial = new THREE.MeshBasicMaterial({
+      color: bulbColor,
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+    })
+    const bulb = new THREE.Mesh(bulbGeometry, bulbMaterial)
+    bulb.position.set(x, y, z + POLE_HEIGHT + BULB_RADIUS * 0.5)
+    bulb.renderOrder = 951
+    this.threeScene.add(bulb)
+
+    // 朝向箭头:默认沿 +X 方向,根据 orientation.rz 绕 Z 轴旋转
+    // 取 orientation[2] 作为水平朝向角(弧度)
+    const yaw = orientation[2] || 0
+    const dirVec = new THREE.Vector3(Math.cos(yaw), Math.sin(yaw), 0)
+    if (dirVec.lengthSq() < 1e-6) {
+      dirVec.set(1, 0, 0)
+    }
+    dirVec.normalize()
+    const arrowOrigin = new THREE.Vector3(x, y, z + POLE_HEIGHT + BULB_RADIUS * 0.5)
+    const arrow = new THREE.ArrowHelper(
+      dirVec,
+      arrowOrigin,
+      ARROW_LENGTH,
+      0xff2222,
+      ARROW_LENGTH * 0.4,
+      ARROW_LENGTH * 0.3,
+    )
+    arrow.renderOrder = 952
+    arrow.line?.material && (arrow.line.material.depthTest = false)
+    arrow.cone?.material && (arrow.cone.material.depthTest = false)
+    this.threeScene.add(arrow)
+
+    this.trafficLightMeshes.set(id, {
+      id,
+      mesh,
+      geometry,
+      material,
+      arrow,
+      bulb,
+      bulbMaterial,
+      baseColor: 0xff2222,
+    })
+  }
+
+  /** 更新红绿灯灯泡颜色(根据 state) */
+  setTrafficLightState(id: number, state: string): void {
+    const entry = this.trafficLightMeshes.get(id)
+    if (!entry || !entry.bulbMaterial) return
+    const color = TRAFFIC_LIGHT_STATE_COLORS[state] ?? 0xcccccc
+    entry.bulbMaterial.color.setHex(color)
+    entry.bulbMaterial.needsUpdate = true
+  }
+
+  /** 移除红绿灯可视化(释放几何体与材质) */
+  removeTrafficLightMesh(id: number): void {
+    const entry = this.trafficLightMeshes.get(id)
+    if (!entry) return
+    this.safeRemoveFromScene(entry.mesh)
+    this.safeRemoveFromScene(entry.bulb)
+    this.safeRemoveFromScene(entry.arrow)
+    this.safeDispose(entry.geometry, 'trafficLight.geometry')
+    this.safeDispose(entry.material, 'trafficLight.material')
+    this.safeDispose(entry.bulb?.geometry, 'trafficLight.bulb.geometry')
+    this.safeDispose(entry.bulbMaterial, 'trafficLight.bulbMaterial')
+    this.safeDispose(entry.arrow?.line?.geometry, 'trafficLight.arrow.line.geometry')
+    this.safeDispose(entry.arrow?.line?.material, 'trafficLight.arrow.line.material')
+    this.safeDispose(entry.arrow?.cone?.geometry, 'trafficLight.arrow.cone.geometry')
+    this.safeDispose(entry.arrow?.cone?.material, 'trafficLight.arrow.cone.material')
+    this.trafficLightMeshes.delete(id)
+  }
+
+  /** 高亮 / 取消高亮红绿灯 */
+  highlightTrafficLight(id: number, highlight: boolean): void {
+    const entry = this.trafficLightMeshes.get(id)
+    if (!entry) return
+    if (highlight) {
+      entry.material.opacity = 1.0
+      entry.material.color.setHex(0xffff00)
+      if (entry.bulbMaterial) {
+        entry.bulbMaterial.opacity = 1.0
+      }
+    } else {
+      entry.material.opacity = 0.85
+      entry.material.color.setHex(entry.baseColor)
+      if (entry.bulbMaterial) {
+        entry.bulbMaterial.opacity = 0.95
+      }
+    }
+    entry.material.needsUpdate = true
+    if (entry.bulbMaterial) entry.bulbMaterial.needsUpdate = true
+  }
+
+  /** 清除所有红绿灯可视化 */
+  clearAllTrafficLightMeshes(): void {
+    for (const id of Array.from(this.trafficLightMeshes.keys())) {
+      this.removeTrafficLightMesh(id)
+    }
+  }
+
+  /** 获取当前可视化的红绿灯数量 */
+  getTrafficLightMeshCount(): number {
+    return this.trafficLightMeshes.size
+  }
+
+  /** 判断指定红绿灯是否已可视化 */
+  hasTrafficLightMesh(id: number): boolean {
+    return this.trafficLightMeshes.has(id)
+  }
+
+  // ============================================================
+  //  停止线可视化(Stop Line)
+  // ============================================================
+
+  /**
+   * 添加停止线可视化(粗白色线段)
+   *
+   * @param id 停止线后端 id(同 id 会先移除旧可视化)
+   * @param coords 构成停止线的扁平坐标 [x0,y0,z0, x1,y1,z1, ...]
+   * @param color 线段颜色(默认白色 0xffffff)
+   */
+  addStopLineMesh(
+    id: number,
+    coords: number[],
+    color: number = 0xffffff,
+  ): void {
+    // 同 id 先移除旧的
+    this.removeStopLineMesh(id)
+
+    const THREE = this.THREE
+    if (!THREE || !this.viewer) return
+
+    const pts = this.parseCoords(coords)
+    if (pts.length < 2) return
+
+    const vec3Pts = pts.map(p => new THREE.Vector3(p.x, p.y, p.z))
+    const geometry = new THREE.BufferGeometry().setFromPoints(vec3Pts)
+    const material = new THREE.LineBasicMaterial({
+      color,
+      linewidth: 5, // 注意:WebGL linewidth 在多数平台被限制为 1,这里仍设值以表达意图
+      transparent: true,
+      opacity: 0.95,
+      depthTest: false,
+    })
+    const line = new THREE.Line(geometry, material)
+    line.renderOrder = 960
+    line.frustumCulled = false
+    this.threeScene.add(line)
+
+    // 为弥补 linewidth 在 WebGL 中的限制,额外添加一串沿坐标的小球以增强可见性
+    // (可选的"粗线"模拟方案)
+    const dotGeometry = new THREE.BufferGeometry()
+    const dotPositions = new Float32Array(vec3Pts.length * 3)
+    vec3Pts.forEach((p, i) => {
+      dotPositions[i * 3] = p.x
+      dotPositions[i * 3 + 1] = p.y
+      dotPositions[i * 3 + 2] = p.z
+    })
+    dotGeometry.setAttribute('position', new THREE.BufferAttribute(dotPositions, 3))
+    const dotMaterial = new THREE.PointsMaterial({
+      color,
+      size: 0.4,
+      sizeAttenuation: true,
+      transparent: true,
+      opacity: 0.95,
+      depthTest: false,
+    })
+    const dots = new THREE.Points(dotGeometry, dotMaterial)
+    dots.renderOrder = 961
+    dots.frustumCulled = false
+    this.threeScene.add(dots)
+
+    this.stopLineMeshes.set(id, {
+      id,
+      line,
+      geometry,
+      material,
+    })
+
+    // 将附加的点云对象临时挂到 entry 上以便释放
+    ;(this.stopLineMeshes.get(id) as any).__dots = dots
+    ;(this.stopLineMeshes.get(id) as any).__dotGeometry = dotGeometry
+    ;(this.stopLineMeshes.get(id) as any).__dotMaterial = dotMaterial
+  }
+
+  /** 移除停止线可视化(释放几何体与材质) */
+  removeStopLineMesh(id: number): void {
+    const entry = this.stopLineMeshes.get(id)
+    if (!entry) return
+    this.safeRemoveFromScene(entry.line)
+    this.safeRemoveFromScene((entry as any).__dots)
+    this.safeDispose(entry.geometry, 'stopLine.geometry')
+    this.safeDispose(entry.material, 'stopLine.material')
+    this.safeDispose((entry as any).__dotGeometry, 'stopLine.dotGeometry')
+    this.safeDispose((entry as any).__dotMaterial, 'stopLine.dotMaterial')
+    this.stopLineMeshes.delete(id)
+  }
+
+  /** 清除所有停止线可视化 */
+  clearAllStopLineMeshes(): void {
+    for (const id of Array.from(this.stopLineMeshes.keys())) {
+      this.removeStopLineMesh(id)
+    }
+  }
+
+  /** 获取当前可视化的停止线数量 */
+  getStopLineMeshCount(): number {
+    return this.stopLineMeshes.size
+  }
+
+  // ============================================================
+  //  单点拾取模式(用于红绿灯放置)
+  // ============================================================
+
+  /**
+   * 启动单点拾取模式
+   *
+   * - 监听下一次左键点击(非拖拽),拾取点云坐标
+   * - 命中后通过 onPointPicked 回调返回坐标,并自动退出拾取模式
+   * - 期间屏蔽 Potree 左键旋转,保留右键平移 / 滚轮缩放
+   * - 若当前处于绘制模式,会先停止绘制
+   */
+  startPicking(): void {
+    if (this.isPicking) return
+    // 若正在绘制,先退出绘制
+    if (this.isDrawing) {
+      this.stopDrawing()
+    }
+    this.isPicking = true
+
+    this.disablePotreeNavigation()
+
+    const dom = this.getDomElement()
+    if (dom) {
+      dom.addEventListener('mousedown', this.boundMouseDown, true)
+      dom.addEventListener('mouseup', this.boundMouseUp, true)
+    }
+    window.addEventListener('keydown', this.boundKeyDown, true)
+  }
+
+  /** 退出单点拾取模式 */
+  stopPicking(): void {
+    if (!this.isPicking) return
+    this.isPicking = false
+
+    const dom = this.getDomElement()
+    if (dom) {
+      dom.removeEventListener('mousedown', this.boundMouseDown, true)
+      dom.removeEventListener('mouseup', this.boundMouseUp, true)
+    }
+    window.removeEventListener('keydown', this.boundKeyDown, true)
+
+    this.enablePotreeNavigation()
+  }
+
+  /** 当前是否处于拾取模式 */
+  isPickMode(): boolean {
+    return this.isPicking
+  }
+
+  /**
+   * 公开的点云拾取入口:直接从 MouseEvent 拾取点云坐标
+   * 供需要"在任意时刻获取点云坐标"的场景使用(不依赖拾取模式)。
+   * @returns 命中坐标;未命中返回 null
+   */
+  pickPointPublic(event: MouseEvent): MousePos | null {
+    const p = this.pickPoint(event)
+    if (!p) return null
+    return { x: p.x, y: p.y, z: p.z }
+  }
+
   /**
    * 检测新 Lanelet 是否与已有 Lanelet 区域重叠(XY 平面)
    * 使用射线投射:对新多边形的每个顶点,检查是否落在已有 Lanelet 的多边形内
@@ -742,9 +1134,12 @@ export class DrawingManager {
 
   /** 销毁:移除所有监听并释放全部资源 */
   dispose(): void {
+    this.stopPicking()
     this.stopDrawing()
     this.clearAllFinishedLines()
     this.clearAllLaneletMeshes()
+    this.clearAllTrafficLightMeshes()
+    this.clearAllStopLineMeshes()
     const dom = this.getDomElement()
     if (dom) {
       dom.removeEventListener('mousemove', this.boundMouseMove, true)
@@ -755,6 +1150,7 @@ export class DrawingManager {
     this.onCollision = undefined
     this.onModeChanged = undefined
     this.onMouseMove = undefined
+    this.onPointPicked = undefined
   }
 
   // ============================================================
@@ -787,7 +1183,8 @@ export class DrawingManager {
   }
 
   private handleMouseDown(event: MouseEvent): void {
-    if (!this.isDrawing) return
+    // 绘制模式或拾取模式均需拦截左键 mousedown
+    if (!this.isDrawing && !this.isPicking) return
     if (event.button !== 0) return // 仅拦截左键
     // 记录按下位置,用于 mouseup 判断是否为简单点击
     this.mouseDownX = event.clientX
@@ -797,21 +1194,34 @@ export class DrawingManager {
   }
 
   private handleMouseUp(event: MouseEvent): void {
-    if (!this.isDrawing) return
+    if (!this.isDrawing && !this.isPicking) return
     if (event.button !== 0) return // 仅响应左键
     // 判断是否为简单点击(鼠标移动距离小于阈值,非拖拽)
     const dx = event.clientX - this.mouseDownX
     const dy = event.clientY - this.mouseDownY
     const moveDist = Math.sqrt(dx * dx + dy * dy)
     if (moveDist > 5) return // 拖拽,忽略
-    // 简单点击:拾取点云并放置锚点
+    // 简单点击:拾取点云
     event.stopImmediatePropagation()
     event.preventDefault()
     const point = this.pickPoint(event)
     if (!point) {
       console.warn('[DrawingManager] 左键点击未命中点云,请确保鼠标在点云可见区域内点击')
+      if (this.isPicking) {
+        this.onCollision?.('未拾取到点云坐标,请重试')
+      }
       return
     }
+
+    // 拾取模式:返回坐标后自动退出
+    if (this.isPicking) {
+      const pos: MousePos = { x: point.x, y: point.y, z: point.z }
+      this.onPointPicked?.(pos)
+      this.stopPicking()
+      return
+    }
+
+    // 绘制模式:放置锚点
     this.addPoint(point)
   }
 
@@ -833,6 +1243,13 @@ export class DrawingManager {
   }
 
   private handleKeyDown(event: KeyboardEvent): void {
+    // Esc 在拾取模式下取消拾取
+    if (this.isPicking && event.key === 'Escape') {
+      event.stopImmediatePropagation()
+      event.preventDefault()
+      this.stopPicking()
+      return
+    }
     if (!this.isDrawing) return
     if (event.key === 'Escape') {
       event.stopImmediatePropagation()

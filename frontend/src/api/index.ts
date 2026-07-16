@@ -8,7 +8,7 @@ const http = axios.create({
 export interface HealthInfo {
   status: string
   lanelet2_available: boolean
-  origin: { lat: number; lon: number }
+  origin: { lat: number; lon: number; alt: number }
   data_dir: string
   potreeconverter: boolean
 }
@@ -263,8 +263,241 @@ export async function clearLinestrings() {
   return data
 }
 
-// 导出 OSM
-export async function exportOsm(path = '/app/data/output.osm') {
-  const { data } = await http.post('/export', null, { params: { path } })
+// ---------------- OSM 导入 / 导出 ----------------
+
+/** 导出结果 */
+export interface ExportResult {
+  path: string
+  filename: string
+  size: number
+  download_url: string
+}
+
+/** 导入统计 */
+export interface ImportStats {
+  linestring_count: number
+  lanelet_count: number
+  regulatory_count: number
+}
+
+/** 导出当前地图为 Lanelet2 .osm 文件
+ * path 为空时后端默认输出到 data/exports/map_<timestamp>.osm
+ */
+export async function exportOsm(path?: string): Promise<ExportResult> {
+  const { data } = await http.post('/export', { path })
   return data
 }
+
+/** 导入 .osm 文件(会清空当前地图后重建) */
+export async function importOsm(path: string): Promise<ImportStats> {
+  const { data } = await http.post('/import', { path })
+  return data
+}
+
+/** 构造导出文件下载 URL(配合 exportOsm 返回的 filename 使用) */
+export function exportDownloadUrl(filename: string): string {
+  return `/api/export/download/${filename}`
+}
+
+// ---------------- 校验: 拓扑 / 几何 ----------------
+
+export interface TopologyIssue {
+  type: 'isolated' | 'dangling' | 'direction_conflict'
+  lanelet_id: number
+  message: string
+}
+
+export interface GeometryIssue {
+  type: 'overlap' | 'self_intersect' | 'boundary_cross'
+  id: number
+  message: string
+}
+
+/** 拓扑校验(孤立车道 / 断头路 / 方向冲突) */
+export async function validateTopology(): Promise<TopologyIssue[]> {
+  const { data } = await http.get('/validate/topology')
+  return data.items
+}
+
+/** 几何校验(LineString 重叠 / 自相交 / Lanelet 左右边界交叉) */
+export async function validateGeometry(): Promise<GeometryIssue[]> {
+  const { data } = await http.get('/validate/geometry')
+  return data.items
+}
+
+// ---------------- 坐标系原点配置 ----------------
+
+export interface OriginConfig {
+  lat: number
+  lon: number
+  alt: number
+}
+
+/** 获取当前投影原点 */
+export async function getOrigin(): Promise<OriginConfig> {
+  const { data } = await http.get('/config/origin')
+  return data
+}
+
+/** 设置投影原点(WGS84 经纬度 + 高程) */
+export async function setOrigin(lat: number, lon: number, alt = 0): Promise<OriginConfig> {
+  const { data } = await http.put('/config/origin', { lat, lon, alt })
+  return data
+}
+
+// ============================================================
+//  Regulatory Element API(交通规则元素)
+// ============================================================
+
+/** Regulatory Element 类型 */
+export type RegulatoryElementType =
+  | 'traffic_light'
+  | 'stop_line'
+  | 'crosswalk'
+  | 'traffic_sign'
+
+/** Regulatory Element 数据结构 */
+export interface RegulatoryElement {
+  id: number
+  /** 元素类型:traffic_light / stop_line / crosswalk / traffic_sign */
+  type: RegulatoryElementType | string
+  /** 关联的 Lanelet id 列表 */
+  lanelet_ids: number[]
+  /** 附加属性(如 sign_type / state / color 等) */
+  attrs: Record<string, string>
+}
+
+/** 创建 Regulatory Element */
+export async function createRegulatoryElement(
+  type: string,
+  lanelet_ids: number[],
+  attrs: Record<string, string> = {},
+): Promise<RegulatoryElement> {
+  const { data } = await http.post('/regulatory_elements', {
+    type,
+    lanelet_ids,
+    attrs,
+  })
+  return data
+}
+
+/** 列出所有 Regulatory Element */
+export async function listRegulatoryElements(): Promise<RegulatoryElement[]> {
+  const { data } = await http.get('/regulatory_elements')
+  return data.items
+}
+
+/** 获取单个 Regulatory Element */
+export async function getRegulatoryElement(id: number): Promise<RegulatoryElement> {
+  const { data } = await http.get(`/regulatory_elements/${id}`)
+  return data
+}
+
+/** 更新 Regulatory Element */
+export async function updateRegulatoryElement(
+  id: number,
+  payload: {
+    type?: string
+    lanelet_ids?: number[]
+    attrs?: Record<string, string>
+  },
+): Promise<RegulatoryElement> {
+  const { data } = await http.put(`/regulatory_elements/${id}`, payload)
+  return data
+}
+
+/** 删除 Regulatory Element */
+export async function deleteRegulatoryElement(id: number) {
+  const { data } = await http.delete(`/regulatory_elements/${id}`)
+  return data
+}
+
+// ============================================================
+//  Traffic Light API(红绿灯)
+// ============================================================
+
+/** 红绿灯数据结构 */
+export interface TrafficLight {
+  id: number
+  /** 世界坐标 [x, y, z] */
+  position: [number, number, number]
+  /** 朝向(欧拉角,弧度)[x, y, z] */
+  orientation: [number, number, number]
+  /** 关联的 Lanelet id(可空) */
+  lanelet_id: number | null
+  /** 附加属性(state / color 等) */
+  attrs: Record<string, string>
+}
+
+/** 创建红绿灯 */
+export async function createTrafficLight(
+  position: [number, number, number],
+  orientation: [number, number, number] = [0, 0, 0],
+  lanelet_id: number | null = null,
+  attrs: Record<string, string> = {},
+): Promise<TrafficLight> {
+  const { data } = await http.post('/traffic_lights', {
+    position,
+    orientation,
+    lanelet_id,
+    attrs,
+  })
+  return data
+}
+
+/** 列出所有红绿灯 */
+export async function listTrafficLights(): Promise<TrafficLight[]> {
+  const { data } = await http.get('/traffic_lights')
+  return data.items
+}
+
+/** 删除红绿灯 */
+export async function deleteTrafficLight(id: number) {
+  const { data } = await http.delete(`/traffic_lights/${id}`)
+  return data
+}
+
+// ============================================================
+//  Stop Line API(停止线)
+// ============================================================
+
+/** 停止线数据结构 */
+export interface StopLine {
+  id: number
+  /** 构成停止线的 LineString id */
+  linestring_id: number
+  /** 关联的 Lanelet id */
+  lanelet_id: number
+  /** 关联的红绿灯 id(可空) */
+  traffic_light_id: number | null
+  attrs: Record<string, string>
+}
+
+/** 创建停止线 */
+export async function createStopLine(
+  linestring_id: number,
+  lanelet_id: number,
+  traffic_light_id: number | null = null,
+): Promise<StopLine> {
+  const { data } = await http.post('/stop_lines', {
+    linestring_id,
+    lanelet_id,
+    traffic_light_id,
+  })
+  return data
+}
+
+/** 列出所有停止线 */
+export async function listStopLines(): Promise<StopLine[]> {
+  const { data } = await http.get('/stop_lines')
+  return data.items
+}
+
+/** 删除停止线 */
+export async function deleteStopLine(id: number) {
+  const { data } = await http.delete(`/stop_lines/${id}`)
+  return data
+}
+
+// 注:导出/导入/校验/原点 API 见本文件上方已定义的
+// exportOsm / importOsm / exportDownloadUrl / validateTopology / validateGeometry / getOrigin / setOrigin

@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     # Lanelet2 地图 JSON 持久化文件默认路径
     map_file: Path = Path("/app/data/map.json")
 
+    # OSM 导出目录(Lanelet2 .osm 文件输出位置)
+    exports_dir: Path = Path("/app/data/exports")
+
     # PotreeConverter 可执行文件路径(宿主机编译后挂载)
     potreeconverter_path: str = "/opt/potreeconverter/PotreeConverter"
 
@@ -27,6 +30,8 @@ class Settings(BaseSettings):
     # 默认上海,生产环境必须修改为实际采集点
     origin_lat: float = 31.2304
     origin_lon: float = 121.4737
+    # 原点高程(米),局部坐标系的 z=0 对应的椭球高
+    origin_alt: float = 0.0
 
     # 跨域允许
     cors_origins: list[str] = ["*"]
@@ -42,3 +47,4 @@ settings = Settings()
 settings.data_dir.mkdir(parents=True, exist_ok=True)
 settings.pointcloud_dir.mkdir(parents=True, exist_ok=True)
 settings.raw_dir.mkdir(parents=True, exist_ok=True)
+settings.exports_dir.mkdir(parents=True, exist_ok=True)
