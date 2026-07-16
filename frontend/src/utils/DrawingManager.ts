@@ -137,8 +137,8 @@ interface LaneletMesh {
   geometry: any
   /** 面片材质 */
   material: any
-  /** 方向箭头 */
-  arrow: any
+  /** 方向箭头(多个,沿路径轨迹分布) */
+  arrows: any[]
   /** 基础方向向量(forward 方向,用于切换方向时计算) */
   baseDir: any // THREE.Vector3
   /** 当前方向 */
@@ -595,29 +595,72 @@ export class DrawingManager {
       cn > 0 ? cz / cn : avgZ,
     )
 
-    // 箭头长度:边界总长度的 1/3,限制在 [2, 12] 米(增大可见性)
+    // 方向箭头:沿路径轨迹分布多个小箭头,跟随线路弯曲方向
+    const arrows: any[] = []
+    const arrowColor = color
     const boundLen = this.estimateBoundLength(leftPts)
-    const arrowLen = Math.min(12, Math.max(2, boundLen / 3))
-    const arrow = new THREE.ArrowHelper(
-      dirVec,
-      center,
-      arrowLen,
-      color,
-      arrowLen * 0.4,
-      arrowLen * 0.25,
-    )
-    // 箭头显示在所有区域面上层:关闭深度测试 + 高 renderOrder
-    arrow.renderOrder = 999
-    arrow.line?.material && (arrow.line.material.depthTest = false)
-    arrow.cone?.material && (arrow.cone.material.depthTest = false)
-    this.threeScene.add(arrow)
+    const arrowSize = Math.min(3, Math.max(1.5, boundLen / 10))
+
+    // 沿左右边界中线采样箭头位置
+    const minLen = Math.min(leftPts.length, rightPts.length)
+    const step = Math.max(1, Math.floor(minLen / 5)) // 大约 5 个箭头
+    for (let i = 0; i < minLen; i += step) {
+      const lp = leftPts[i]
+      const rp = rightPts[i]
+      // 中点位置
+      const midX = (lp.x + rp.x) / 2
+      const midY = (lp.y + rp.y) / 2
+      const midZ = (lp.z + rp.z) / 2
+
+      // 方向:沿左边界切线(当前点→下一个点)
+      const nextIdx = Math.min(i + 1, leftPts.length - 1)
+      const dx = leftPts[nextIdx].x - lp.x
+      const dy = leftPts[nextIdx].y - lp.y
+      let segDir = new THREE.Vector3(dx, dy, 0)
+      if (segDir.lengthSq() < 1e-6) continue
+      segDir.normalize()
+      if (direction === 'backward') {
+        segDir.negate()
+      }
+
+      const arrow = new THREE.ArrowHelper(
+        segDir,
+        new THREE.Vector3(midX, midY, midZ + 0.1),
+        arrowSize,
+        arrowColor,
+        arrowSize * 0.4,
+        arrowSize * 0.3,
+      )
+      arrow.renderOrder = 999
+      arrow.line?.material && (arrow.line.material.depthTest = false)
+      arrow.cone?.material && (arrow.cone.material.depthTest = false)
+      this.threeScene.add(arrow)
+      arrows.push(arrow)
+    }
+
+    // 如果没有采样到箭头(边界太短),在中心放一个
+    if (arrows.length === 0) {
+      const arrow = new THREE.ArrowHelper(
+        dirVec,
+        center,
+        arrowSize,
+        arrowColor,
+        arrowSize * 0.4,
+        arrowSize * 0.3,
+      )
+      arrow.renderOrder = 999
+      arrow.line?.material && (arrow.line.material.depthTest = false)
+      arrow.cone?.material && (arrow.cone.material.depthTest = false)
+      this.threeScene.add(arrow)
+      arrows.push(arrow)
+    }
 
     this.laneletMeshes.set(id, {
       id,
       mesh,
       geometry,
       material,
-      arrow,
+      arrows,
       baseDir: forwardDir,
       direction,
       baseColor: color,
@@ -630,14 +673,16 @@ export class DrawingManager {
     const entry = this.laneletMeshes.get(id)
     if (!entry) return
     this.safeRemoveFromScene(entry.mesh)
-    this.safeRemoveFromScene(entry.arrow)
     this.safeDispose(entry.geometry, 'lanelet.geometry')
     this.safeDispose(entry.material, 'lanelet.material')
-    // ArrowHelper 由 line(LineBasicMaterial) + cone(MeshBasicMaterial) 组成
-    this.safeDispose(entry.arrow?.line?.geometry, 'lanelet.arrow.line.geometry')
-    this.safeDispose(entry.arrow?.line?.material, 'lanelet.arrow.line.material')
-    this.safeDispose(entry.arrow?.cone?.geometry, 'lanelet.arrow.cone.geometry')
-    this.safeDispose(entry.arrow?.cone?.material, 'lanelet.arrow.cone.material')
+    // 清理所有箭头
+    for (const arrow of entry.arrows ?? []) {
+      this.safeRemoveFromScene(arrow)
+      this.safeDispose(arrow?.line?.geometry, 'arrow.line.geometry')
+      this.safeDispose(arrow?.line?.material, 'arrow.line.material')
+      this.safeDispose(arrow?.cone?.geometry, 'arrow.cone.geometry')
+      this.safeDispose(arrow?.cone?.material, 'arrow.cone.material')
+    }
     this.laneletMeshes.delete(id)
   }
 
@@ -682,14 +727,17 @@ export class DrawingManager {
    */
   setLaneletDirection(id: number, direction: 'forward' | 'backward'): void {
     const entry = this.laneletMeshes.get(id)
-    if (!entry || !entry.arrow || !this.THREE) return
+    if (!entry || !entry.arrows || !this.THREE) return
 
     // 从 baseDir 计算:forward 用原方向,backward 取反
     const dir = entry.baseDir.clone()
     if (direction === 'backward') {
       dir.negate()
     }
-    entry.arrow.setDirection(dir)
+    // 更新所有箭头方向
+    for (const arrow of entry.arrows) {
+      arrow.setDirection(dir)
+    }
     entry.direction = direction
   }
 
@@ -1289,11 +1337,27 @@ export class DrawingManager {
 
   /** 添加一个锚点 */
   private addPoint(point: any): void {
-    // 碰撞检测:检查新点是否与已有线段的点过近
-    const collisions = this.checkPointCollision(point.x, point.y, point.z)
+    // 碰撞检测:检查新点是否与已有线段的点过近(阈值 1.0m)
+    const collisions = this.checkPointCollision(point.x, point.y, point.z, 1.0)
+
+    // 也检查当前正在绘制的线的已有锚点
+    for (let i = 0; i < this.points.length; i++) {
+      const p = this.points[i]
+      const dx = p.x - point.x
+      const dy = p.y - point.y
+      const dz = p.z - point.z
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz)
+      if (dist < 1.0) {
+        collisions.push(-1) // -1 表示当前线
+        break
+      }
+    }
+
     if (collisions.length > 0) {
-      const backendIds = collisions.map(id => this.lineIdMap?.get(id) ?? id)
-      const msg = `点碰撞!距离已有线段 #${backendIds.join(', #')} 过近(< 0.5m)`
+      const backendIds = collisions.filter(id => id !== -1).map(id => this.lineIdMap?.get(id) ?? id)
+      const msg = backendIds.length > 0
+        ? `点碰撞!距离已有线段 #${backendIds.join(', #')} 过近(< 1.0m)`
+        : '点碰撞!距离当前线段已有点过近(< 1.0m)'
       console.warn(`[DrawingManager] ${msg}`)
       this.onCollision?.(msg)
     }
