@@ -71,6 +71,12 @@
         <!-- Lanelet2 元素:LineString 绘制 / Lanelet 组装 -->
         <el-tab-pane label="元素" name="elements">
           <div class="elements-toolbar">
+            <el-button size="small" type="primary" @click="handleSaveMap" :loading="savingMap">
+              保存地图
+            </el-button>
+            <el-button size="small" @click="handleLoadMap" :loading="loadingMap">
+              加载地图
+            </el-button>
             <el-button size="small" @click="handleExportOsm" :loading="exporting">
               导出 OSM
             </el-button>
@@ -216,6 +222,11 @@ import {
   createLinestring,
   deleteLinestring,
   exportOsm,
+  saveMapAll,
+  loadMapAll,
+  getMapInfo,
+  listLaneletsWithGeometry,
+  listLinestrings,
   validateTopology,
   validateGeometry,
   type PointCloudItem,
@@ -245,6 +256,8 @@ const currentPointcloud = ref('')
 const mousePos = ref<MousePos | null>(null)
 const initError = ref('')
 const exporting = ref(false)
+const savingMap = ref(false)
+const loadingMap = ref(false)
 
 // 标注视图模式
 const annotationOnlyMode = ref(false) // 隐藏点云,仅看标注
@@ -374,6 +387,20 @@ function initPotree() {
       // 注册全局键盘快捷键
       window.addEventListener('keydown', handleGlobalKeyDown, true)
       console.log('[Lanelet Editor] DrawingManager 初始化成功')
+
+      // 检查后端是否有已保存的地图,自动加载
+      getMapInfo().then(async (info) => {
+        try {
+          if (info.map_exists && (info.linestring_count > 0 || info.lanelet_count > 0)) {
+            ElMessage.info(`检测到已保存的地图(${info.linestring_count} 线段, ${info.lanelet_count} Lanelet),正在恢复...`)
+            await refreshAllFromBackend()
+          }
+        } catch (e) {
+          console.warn('[MapView] 自动加载地图失败:', e)
+        }
+      }).catch((e) => {
+        console.warn('[MapView] 获取地图信息失败:', e)
+      })
     }
     initDrawing()
   } catch (err) {
@@ -681,6 +708,74 @@ async function handleExportOsm() {
     ElMessage.error('导出失败: ' + (e?.response?.data?.detail || e?.message || ''))
   } finally {
     exporting.value = false
+  }
+}
+
+/** 保存地图(所有标注到 JSON) */
+async function handleSaveMap() {
+  savingMap.value = true
+  try {
+    const res = await saveMapAll()
+    ElMessage.success(`已保存: ${res.linestring_count} 条线段 + ${res.lanelet_count} 个 Lanelet`)
+  } catch (e: any) {
+    ElMessage.error('保存失败: ' + (e?.response?.data?.detail || e?.message || ''))
+  } finally {
+    savingMap.value = false
+  }
+}
+
+/** 加载地图(从 JSON 恢复所有标注) */
+async function handleLoadMap() {
+  loadingMap.value = true
+  try {
+    const res = await loadMapAll()
+    ElMessage.success(`已加载: ${res.linestring_count ?? 0} 条线段 + ${res.lanelet_count ?? 0} 个 Lanelet`)
+
+    // 清空前端现有标注
+    drawingManagerRef.value?.clearAll()
+
+    // 重新加载所有数据
+    await refreshAllFromBackend()
+  } catch (e: any) {
+    ElMessage.error('加载失败: ' + (e?.response?.data?.detail || e?.message || ''))
+  } finally {
+    loadingMap.value = false
+  }
+}
+
+/** 从后端刷新所有标注到前端 */
+async function refreshAllFromBackend() {
+  const dm = drawingManagerRef.value
+  if (!dm) return
+
+  // 加载 LineString
+  try {
+    const lines = await listLinestrings()
+    // 清空现有 lineIdMap
+    lineIdMap.clear()
+    for (const line of lines) {
+      if (line.coords && line.coords.length >= 6) {
+        const internalId = dm.addFinishedLine(line.coords, line.type, line.subtype)
+        lineIdMap.set(internalId, line.id)
+      }
+    }
+    ElMessage.info(`已恢复 ${lines.length} 条线段`)
+  } catch (e) {
+    console.warn('[MapView] 加载线段失败:', e)
+  }
+
+  // 加载 Lanelet
+  try {
+    const laneletsData = await listLaneletsWithGeometry()
+    for (const ll of laneletsData) {
+      if (ll.left_coords && ll.right_coords) {
+        const dir = (ll.attrs?.direction === 'backward' ? 'backward' : 'forward') as 'forward' | 'backward'
+        dm.addLaneletMesh(ll.id, ll.left_coords, ll.right_coords, 0x00cc00, dir)
+      }
+    }
+    ElMessage.info(`已恢复 ${laneletsData.length} 个 Lanelet`)
+  } catch (e) {
+    console.warn('[MapView] 加载 Lanelet 失败:', e)
   }
 }
 

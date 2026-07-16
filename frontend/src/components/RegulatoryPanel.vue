@@ -333,8 +333,9 @@ async function loadLanelets(): Promise<void> {
   try {
     const items = await listLanelets()
     lanelets.value = (items as any[]).map(it => ({ id: it.id }))
-  } catch {
-    // 后端可能未就绪
+    console.log('[RegulatoryPanel] 已加载 Lanelet 列表:', lanelets.value.length, '条')
+  } catch (e) {
+    console.warn('[RegulatoryPanel] 加载 Lanelet 列表失败:', e)
   }
 }
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 import time
@@ -46,6 +47,15 @@ app.add_middleware(
 
 # 全局 Lanelet2 服务实例
 ll_service = Lanelet2Service()
+
+# 启动时自动加载默认地图文件(如果存在)
+_default_map = str(settings.map_file)
+if os.path.exists(_default_map):
+    try:
+        _load_result = ll_service.load_from_file(_default_map)
+        print(f"[startup] 自动加载地图: {_default_map} -> {_load_result}")
+    except Exception as _e:
+        print(f"[startup] 自动加载地图失败(忽略): {_e}")
 
 # 转换任务状态(内存,重启后清空)
 # task_id -> {"status", "stage", "progress", "message", "name", "created_at"}
@@ -801,7 +811,45 @@ def map_health() -> dict[str, Any]:
         "lanelet_count": len(lanelets),
         "origin": ll_service.get_origin(),
         "map_file": str(settings.map_file),
+        "map_exists": os.path.exists(str(settings.map_file)),
     }
+
+
+@app.post("/api/map/save")
+def save_map_endpoint(req: MapFileReq | None = None) -> dict[str, Any]:
+    """保存当前所有标注(LineString + Lanelet + RE)到默认或指定 JSON 文件"""
+    path = (req.path if req else None) or str(settings.map_file)
+    if not _is_safe_path(path):
+        raise HTTPException(400, f"非法路径: {path}")
+    try:
+        saved = ll_service.save_to_file(path)
+        linestrings = ll_service.list_linestrings()
+        lanelets = ll_service.list_lanelets()
+        return {
+            "path": saved,
+            "linestring_count": len(linestrings),
+            "lanelet_count": len(lanelets),
+            "message": f"已保存 {len(linestrings)} 条线段 + {len(lanelets)} 个 Lanelet",
+        }
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/map/load")
+def load_map_endpoint(req: MapFileReq | None = None) -> dict[str, Any]:
+    """从默认或指定 JSON 文件加载标注(会清空当前 map)"""
+    path = (req.path if req else None) or str(settings.map_file)
+    if not _is_safe_path(path):
+        raise HTTPException(400, f"非法路径: {path}")
+    try:
+        result = ll_service.load_from_file(path)
+        return {"path": path, **result}
+    except FileNotFoundError:
+        raise HTTPException(404, f"文件不存在: {path}")
+    except json.JSONDecodeError as e:
+        raise HTTPException(400, f"JSON 解析失败: {e}")
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
 
 @app.post("/api/export")

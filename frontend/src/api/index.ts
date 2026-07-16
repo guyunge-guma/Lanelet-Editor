@@ -265,6 +265,24 @@ export async function loadMap(path?: string) {
   return data
 }
 
+/** 保存当前所有标注到默认地图文件(新 API,含 RE) */
+export async function saveMapAll(): Promise<{ path: string; linestring_count: number; lanelet_count: number; message: string }> {
+  const { data } = await http.post('/map/save')
+  return data
+}
+
+/** 从默认地图文件加载所有标注(新 API,含 RE) */
+export async function loadMapAll(): Promise<{ path: string; linestring_count: number; lanelet_count: number }> {
+  const { data } = await http.post('/map/load')
+  return data
+}
+
+/** 获取当前地图状态 */
+export async function getMapInfo(): Promise<{ map_exists: boolean; linestring_count: number; lanelet_count: number; map_file: string }> {
+  const { data } = await http.get('/map/health')
+  return data
+}
+
 /** 清空所有 LineString */
 export async function clearLinestrings() {
   const { data } = await http.delete('/linestrings')

@@ -271,6 +271,9 @@ export class DrawingManager {
   private mouseDownX = 0
   private mouseDownY = 0
 
+  /** 标注是否置顶显示(默认 true,穿透点云) */
+  annotationOnTop = true
+
   // ---------------- 撤销/重做历史栈 ----------------
   private undoStack: HistoryEntry[] = []
   private redoStack: HistoryEntry[] = []
@@ -631,6 +634,43 @@ export class DrawingManager {
     }
   }
 
+  /** 清空所有标注(线段 + Lanelet + 红绿灯 + 停止线) */
+  clearAll(): void {
+    this.clearAllFinishedLines()
+    this.clearAllLaneletMeshes()
+    this.clearAllTrafficLightMeshes()
+    this.clearAllStopLineMeshes()
+    this.clearHistory()
+  }
+
+  /** 从后端数据恢复一条已完成线段(不触发 onLineFinished 回调) */
+  addFinishedLine(coords: number[], type: string, subtype: string): number {
+    if (!this.THREE) return -1
+
+    const points = this.parseCoords(coords)
+    if (points.length < 2) return -1
+
+    const geometry = new this.THREE.BufferGeometry().setFromPoints(points)
+    const color = TYPE_COLORS[type] ?? 0x00ff00
+    const material = new this.THREE.LineBasicMaterial({ color, linewidth: 2 })
+    material.depthTest = !this.annotationOnTop
+    const line = new this.THREE.Line(geometry, material)
+    line.renderOrder = 999
+    this.threeScene.add(line)
+
+    const id = this.nextLineId++
+    this.finishedLines.set(id, {
+      id,
+      line,
+      geometry,
+      material,
+      type,
+      subtype,
+      coords,
+    })
+    return id
+  }
+
   /** 获取已完成线段数量 */
   getFinishedCount(): number {
     return this.finishedLines.size
@@ -917,6 +957,7 @@ export class DrawingManager {
    * - false: 标注正常深度渲染(被点云遮挡)
    */
   setAnnotationOnTop(onTop: boolean): void {
+    this.annotationOnTop = onTop
     // onTop=true: 标注穿透点云显示(depthTest=false)
     // onTop=false: 标注正常深度渲染(depthTest=true)
     const depthTest = !onTop
