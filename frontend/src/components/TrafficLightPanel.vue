@@ -48,19 +48,44 @@
       </el-select>
     </div>
 
-    <!-- 朝向(偏航角) -->
+    <!-- 朝向角度(滑块 + 输入框,实时预览) -->
     <div class="form-row">
       <label>朝向</label>
-      <el-input-number
-        v-model="yawDeg"
+      <div class="yaw-control">
+        <el-slider
+          v-model="yawDeg"
+          :min="-180"
+          :max="180"
+          :step="5"
+          style="flex: 1; margin-right: 8px"
+          @input="onYawPreview"
+        />
+        <el-input-number
+          v-model="yawDeg"
+          size="small"
+          :min="-180"
+          :max="180"
+          :step="5"
+          controls-position="right"
+          style="width: 90px"
+          @input="onYawPreview"
+        />
+        <span class="unit">°</span>
+      </div>
+      <el-button
+        v-if="laneletId !== null"
         size="small"
-        :min="-360"
-        :max="360"
-        :step="15"
-        controls-position="right"
-        style="width: 100%"
-      />
-      <span class="unit">°</span>
+        link
+        type="primary"
+        @click="autoCalcYaw"
+      >
+        根据车道推算
+      </el-button>
+    </div>
+
+    <!-- 实时预览提示 -->
+    <div v-if="previewingYaw" class="hint info" style="font-size: 11px; margin: -4px 0 4px;">
+      预览中: {{ yawDeg }}° (拖动滑块调整,点击"创建"确认)
     </div>
 
     <!-- 初始状态 -->
@@ -235,6 +260,8 @@ function cancelPick(): void {
   isPicking.value = false
   // 清空回调,避免影响其他组件
   dm.onPointPicked = undefined
+  // 清除预览
+  clearPreview()
 }
 
 // ---------------- 创建 ----------------
@@ -272,6 +299,8 @@ async function handleCreate(): Promise<void> {
     emit('traffic-light-created', id)
     selectLight(id)
 
+    // 清除预览
+    clearPreview()
     // 重置表单
     position.value = null
     laneletId.value = null
@@ -440,6 +469,74 @@ watch(drawingManagerRef, () => {
   initOnce()
 }, { immediate: true })
 
+// 当用户选择关联 Lanelet 时,自动推算红绿灯朝向
+watch(laneletId, (newId) => {
+  if (newId === null) return
+  autoCalcYaw()
+})
+
+/** 根据车道方向自动推算朝向 */
+function autoCalcYaw() {
+  if (laneletId.value === null) return
+  const dm = drawingManager.value
+  if (!dm) return
+  const dir = dm.getLaneletDirection(laneletId.value)
+  if (dir) {
+    // 红绿灯应朝向车流来向(即与车道方向相反,面向来车)
+    const facingYaw = dir.yaw + Math.PI // 反方向
+    let deg = (facingYaw * 180) / Math.PI
+    while (deg > 180) deg -= 360
+    while (deg < -180) deg += 360
+    yawDeg.value = Math.round(deg)
+    ElMessage.info(`已根据车道方向自动推算朝向: ${Math.round(deg)}°`)
+    onYawPreview()
+  }
+}
+
+/** 实时预览朝向变化 */
+const previewingYaw = ref(false)
+let previewTlId: number | null = null
+let previewTimer: ReturnType<typeof setTimeout> | null = null
+
+function onYawPreview() {
+  // 只在已拾取位置后预览
+  if (!position.value || !drawingManager.value) return
+  previewingYaw.value = true
+  // 防抖: 100ms 内只更新一次
+  if (previewTimer) clearTimeout(previewTimer)
+  previewTimer = setTimeout(() => {
+    doPreview()
+  }, 100)
+}
+
+function doPreview() {
+  const dm = drawingManager.value
+  if (!dm || !position.value) return
+  const yawRad = (yawDeg.value * Math.PI) / 180
+  // 如果还没有预览红绿灯,创建一个临时预览(用特殊 id -1)
+  if (previewTlId === null) {
+    previewTlId = -1
+    dm.addTrafficLightMesh(
+      -1,
+      [position.value[0], position.value[1], position.value[2]],
+      [0, 0, yawRad],
+      state.value,
+    )
+  } else {
+    // 已有预览,更新朝向
+    dm.updateTrafficLightOrientation(-1, yawRad)
+  }
+}
+
+/** 清除预览红绿灯 */
+function clearPreview() {
+  if (previewTlId !== null) {
+    drawingManager.value?.removeTrafficLightMesh(-1)
+    previewTlId = null
+  }
+  previewingYaw.value = false
+}
+
 onBeforeUnmount(() => {
   // 退出拾取模式,清空高亮
   cancelPick()
@@ -503,6 +600,13 @@ onBeforeUnmount(() => {
   font-size: 12px;
   color: #909399;
   flex-shrink: 0;
+}
+
+.yaw-control {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  gap: 4px;
 }
 
 .create-btn {

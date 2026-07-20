@@ -953,6 +953,55 @@ export class DrawingManager {
     entry.material.needsUpdate = true
   }
 
+  /**
+   * 获取 Lanelet 的方向向量(水平投影到 XY 平面)
+   * @returns { x, y, yaw } 方向向量和偏航角(弧度),Lanelet 不存在时返回 null
+   */
+  getLaneletDirection(id: number): { x: number; y: number; yaw: number } | null {
+    const entry = this.laneletMeshes.get(id)
+    if (!entry || !entry.baseDir) return null
+    const dir = entry.baseDir.clone()
+    if (entry.direction === 'backward') {
+      dir.negate()
+    }
+    // 投影到 XY 平面
+    const x = dir.x
+    const y = dir.y
+    const yaw = Math.atan2(y, x)
+    return { x, y, yaw }
+  }
+
+  /**
+   * 获取 Lanelet 的终点位置(车道末端中心点)
+   * 用于推算红绿灯/停止线的合理放置位置
+   * @returns [x, y, z] 或 null
+   */
+  getLaneletEndpoint(id: number): [number, number, number] | null {
+    const entry = this.laneletMeshes.get(id)
+    if (!entry || !this.THREE) return null
+    // baseDir 和 mesh 都存在,从 mesh 的几何体获取边界
+    const mesh = entry.mesh
+    if (!mesh || !mesh.geometry) return null
+    mesh.geometry.computeBoundingBox()
+    const bbox = mesh.geometry.boundingBox
+    if (!bbox) return null
+    // 取 boundingBox 中心 + baseDir 方向偏移(终点方向)
+    const center = new this.THREE.Vector3()
+    bbox.getCenter(center)
+    const dir = entry.baseDir.clone()
+    if (entry.direction === 'backward') {
+      dir.negate()
+    }
+    const size = new this.THREE.Vector3()
+    bbox.getSize(size)
+    const halfLen = Math.max(size.x, size.y) / 2
+    return [
+      center.x + dir.x * halfLen,
+      center.y + dir.y * halfLen,
+      center.z,
+    ]
+  }
+
   /** 清除所有 Lanelet 可视化 */
   clearAllLaneletMeshes(): void {
     for (const id of Array.from(this.laneletMeshes.keys())) {
@@ -1060,71 +1109,109 @@ export class DrawingManager {
     if (!THREE || !this.viewer) return
 
     const [x, y, z] = position
-    const POLE_HEIGHT = 2.5
-    const POLE_RADIUS = 0.15
-    const BULB_RADIUS = 0.3
-    const ARROW_LENGTH = 1.2
+    const POLE_HEIGHT = 3.0
+    const POLE_RADIUS = 0.08
+    const BOX_WIDTH = 0.5
+    const BOX_HEIGHT = 1.2
+    const BOX_DEPTH = 0.2
+    const BULB_RADIUS = 0.18
+    const BULB_SPACING = 0.35
+    const ARROW_LENGTH = 1.5
 
-    // 圆柱体(灯杆 + 灯箱):沿 Y 轴竖立,底部对齐 position
-    const geometry = new THREE.CylinderGeometry(POLE_RADIUS, POLE_RADIUS, POLE_HEIGHT, 16)
-    const material = new THREE.MeshBasicMaterial({
-      color: 0xff2222,
+    // 1. 灯杆(细长圆柱)
+    const poleGeometry = new THREE.CylinderGeometry(POLE_RADIUS, POLE_RADIUS, POLE_HEIGHT, 12)
+    const poleMaterial = new THREE.MeshBasicMaterial({
+      color: 0x666666,
       transparent: true,
-      opacity: 0.85,
+      opacity: 0.9,
       depthWrite: true,
     })
-    const mesh = new THREE.Mesh(geometry, material)
-    // CylinderGeometry 默认中心在原点,平移使底部位于 position
-    mesh.position.set(x, y, z + POLE_HEIGHT / 2)
-    mesh.renderOrder = 950
-    this.threeScene.add(mesh)
+    const pole = new THREE.Mesh(poleGeometry, poleMaterial)
+    pole.position.set(x, y, z + POLE_HEIGHT / 2)
+    pole.renderOrder = 950
+    this.threeScene.add(pole)
 
-    // 顶端灯泡小球
-    const bulbColor = TRAFFIC_LIGHT_STATE_COLORS[state] ?? 0xff0000
-    const bulbGeometry = new THREE.SphereGeometry(BULB_RADIUS, 16, 16)
-    const bulbMaterial = new THREE.MeshBasicMaterial({
-      color: bulbColor,
+    // 2. 灯箱(黑色矩形外壳)
+    const boxGeometry = new THREE.BoxGeometry(BOX_WIDTH, BOX_HEIGHT, BOX_DEPTH)
+    const boxMaterial = new THREE.MeshBasicMaterial({
+      color: 0x222222,
       transparent: true,
       opacity: 0.95,
-      depthWrite: false,
+      depthWrite: true,
     })
-    const bulb = new THREE.Mesh(bulbGeometry, bulbMaterial)
-    bulb.position.set(x, y, z + POLE_HEIGHT + BULB_RADIUS * 0.5)
-    bulb.renderOrder = 951
-    this.threeScene.add(bulb)
+    const box = new THREE.Mesh(boxGeometry, boxMaterial)
+    const boxY = z + POLE_HEIGHT + BOX_HEIGHT / 2
+    box.position.set(x, y, boxY)
+    box.renderOrder = 951
+    this.threeScene.add(box)
 
-    // 朝向箭头:默认沿 +X 方向,根据 orientation.rz 绕 Z 轴旋转
-    // 取 orientation[2] 作为水平朝向角(弧度)
+    // 3. 三个灯泡(红黄绿,竖排)
+    const bulbColors = [
+      { state: 'red', color: 0xff0000, offset: BULB_SPACING },
+      { state: 'yellow', color: 0xffaa00, offset: 0 },
+      { state: 'green', color: 0x00ff00, offset: -BULB_SPACING },
+    ]
+    const bulbs: any[] = []
+    const bulbMaterials: any[] = []
+    const bulbGeometries: any[] = []
+    for (const bc of bulbColors) {
+      const bg = new THREE.SphereGeometry(BULB_RADIUS, 16, 16)
+      const isOn = bc.state === state
+      const bm = new THREE.MeshBasicMaterial({
+        color: isOn ? bc.color : 0x333333,
+        transparent: true,
+        opacity: isOn ? 1.0 : 0.3,
+        depthWrite: false,
+      })
+      const bulb = new THREE.Mesh(bg, bm)
+      bulb.position.set(x, y, boxY + bc.offset)
+      bulb.renderOrder = 952
+      this.threeScene.add(bulb)
+      bulbs.push(bulb)
+      bulbMaterials.push(bm)
+      bulbGeometries.push(bg)
+    }
+
+    // 4. 朝向箭头:从灯箱中心水平指出,表示灯面朝向
     const yaw = orientation[2] || 0
     const dirVec = new THREE.Vector3(Math.cos(yaw), Math.sin(yaw), 0)
     if (dirVec.lengthSq() < 1e-6) {
       dirVec.set(1, 0, 0)
     }
     dirVec.normalize()
-    const arrowOrigin = new THREE.Vector3(x, y, z + POLE_HEIGHT + BULB_RADIUS * 0.5)
+    const arrowOrigin = new THREE.Vector3(x, y, boxY)
     const arrow = new THREE.ArrowHelper(
       dirVec,
       arrowOrigin,
       ARROW_LENGTH,
       0xff2222,
-      ARROW_LENGTH * 0.4,
       ARROW_LENGTH * 0.3,
+      ARROW_LENGTH * 0.2,
     )
-    arrow.renderOrder = 952
+    arrow.renderOrder = 953
     arrow.line?.material && (arrow.line.material.depthTest = false)
     arrow.cone?.material && (arrow.cone.material.depthTest = false)
     this.threeScene.add(arrow)
 
     this.trafficLightMeshes.set(id, {
       id,
-      mesh,
-      geometry,
-      material,
+      mesh: pole, // 主 mesh 引用灯杆(用于高亮)
+      geometry: poleGeometry,
+      material: poleMaterial,
       arrow,
-      bulb,
-      bulbMaterial,
-      baseColor: 0xff2222,
-    })
+      bulb: bulbs[0], // 引用第一个灯泡(兼容旧接口)
+      bulbMaterial: bulbMaterials[0], // 兼容旧接口
+      baseColor: 0x666666,
+      // 额外存储用于释放
+      ...(({
+        box,
+        boxGeometry,
+        boxMaterial,
+        bulbs,
+        bulbMaterials,
+        bulbGeometries,
+      }) as any),
+    } as any)
   }
 
   /** 更新红绿灯灯泡颜色(根据 state) */
@@ -1143,15 +1230,48 @@ export class DrawingManager {
     this.safeRemoveFromScene(entry.mesh)
     this.safeRemoveFromScene(entry.bulb)
     this.safeRemoveFromScene(entry.arrow)
+    // 释放新增的灯箱和灯泡
+    const ext = entry as any
+    if (ext.box) this.safeRemoveFromScene(ext.box)
+    if (Array.isArray(ext.bulbs)) {
+      for (const b of ext.bulbs) this.safeRemoveFromScene(b)
+    }
     this.safeDispose(entry.geometry, 'trafficLight.geometry')
     this.safeDispose(entry.material, 'trafficLight.material')
     this.safeDispose(entry.bulb?.geometry, 'trafficLight.bulb.geometry')
     this.safeDispose(entry.bulbMaterial, 'trafficLight.bulbMaterial')
+    this.safeDispose(ext.boxGeometry, 'trafficLight.boxGeometry')
+    this.safeDispose(ext.boxMaterial, 'trafficLight.boxMaterial')
+    if (Array.isArray(ext.bulbGeometries)) {
+      for (const g of ext.bulbGeometries) this.safeDispose(g, 'trafficLight.bulbGeometry')
+    }
+    if (Array.isArray(ext.bulbMaterials)) {
+      for (const m of ext.bulbMaterials) this.safeDispose(m, 'trafficLight.bulbMaterial')
+    }
     this.safeDispose(entry.arrow?.line?.geometry, 'trafficLight.arrow.line.geometry')
     this.safeDispose(entry.arrow?.line?.material, 'trafficLight.arrow.line.material')
     this.safeDispose(entry.arrow?.cone?.geometry, 'trafficLight.arrow.cone.geometry')
     this.safeDispose(entry.arrow?.cone?.material, 'trafficLight.arrow.cone.material')
     this.trafficLightMeshes.delete(id)
+  }
+
+  /**
+   * 更新红绿灯朝向(仅更新箭头方向,不重建几何体)
+   * 用于实时预览朝向变化
+   */
+  updateTrafficLightOrientation(id: number, yawRad: number): void {
+    const entry = this.trafficLightMeshes.get(id)
+    if (!entry || !this.THREE) return
+    const dirVec = new this.THREE.Vector3(Math.cos(yawRad), Math.sin(yawRad), 0)
+    if (dirVec.lengthSq() < 1e-6) {
+      dirVec.set(1, 0, 0)
+    }
+    dirVec.normalize()
+    // 更新 ArrowHelper 方向
+    if (entry.arrow) {
+      // ArrowHelper 的 setDirection 会自动处理归一化
+      entry.arrow.setDirection(dirVec)
+    }
   }
 
   /** 高亮 / 取消高亮红绿灯 */
