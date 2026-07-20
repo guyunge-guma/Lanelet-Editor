@@ -593,6 +593,13 @@ class StopLineCreateReq(BaseModel):
     lanelet_id: int | None = None  # 关联的车道
 
 
+class StopLineGenerateReq(BaseModel):
+    """根据车道方向生成停止线坐标的请求体"""
+    lanelet_id: int                # 关联的车道 ID(与路径参数一致,便于校验)
+    offset: float = 0.0            # 沿车道方向的偏移量(米)
+    width: float | None = None     # 停止线宽度(米),None 则自动取车道宽度
+
+
 def _is_safe_path(path: str, must_suffix: str = ".json") -> bool:
     """文件路径安全检查: 不允许路径穿越,且必须在 data_dir 内,扩展名匹配"""
     if not path:
@@ -757,6 +764,32 @@ def apply_topology_suggestions(req: ApplySuggestionsReq) -> dict[str, Any]:
         return result
     except RuntimeError as e:
         raise HTTPException(503, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/lanelets/{lanelet_id}/generate_stop_line")
+def generate_stop_line(lanelet_id: int, req: StopLineGenerateReq) -> dict[str, Any]:
+    """根据车道方向生成与车道垂直的停止线坐标
+
+    路径参数 lanelet_id 与请求体中的 lanelet_id 应一致;
+    返回 {coords: [x1, y1, z1, x2, y2, z2]} 两个端点的坐标。
+    """
+    # 校验路径参数与请求体一致(不一致时以路径参数为准,但提示警告)
+    if req.lanelet_id != lanelet_id:
+        # 以路径参数为准,忽略 body 中的 lanelet_id
+        pass
+    try:
+        coords = ll_service.generate_stop_line_coords(
+            lanelet_id=lanelet_id,
+            offset=req.offset,
+            width=req.width,
+        )
+        return {"coords": coords}
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     except Exception as e:
         raise HTTPException(500, str(e))
 

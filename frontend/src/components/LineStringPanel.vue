@@ -50,6 +50,72 @@
       </el-select>
     </div>
 
+    <!-- 生成停止线辅助工具(仅在类型为 stop_line 时显示) -->
+    <el-collapse v-if="selectedType === 'stop_line'" class="stopline-collapse">
+      <el-collapse-item title="根据车道生成停止线" name="stopline-gen">
+        <div class="form-row">
+          <label>关联车道</label>
+          <el-select
+            v-model="stopLineLaneletId"
+            size="small"
+            filterable
+            placeholder="选择车道"
+            :disabled="!drawingManager"
+          >
+            <el-option
+              v-for="ll in availableLanelets"
+              :key="ll.id"
+              :label="`#${ll.id}`"
+              :value="ll.id"
+            />
+          </el-select>
+        </div>
+        <div class="form-row">
+          <label>偏移量(m)</label>
+          <el-input-number
+            v-model="stopLineOffset"
+            :min="-50"
+            :max="50"
+            :step="1"
+            size="small"
+            controls-position="right"
+          />
+        </div>
+        <div class="form-row">
+          <label>宽度(m)</label>
+          <el-input-number
+            v-model="stopLineWidth"
+            :min="0.5"
+            :max="20"
+            :step="0.5"
+            size="small"
+            placeholder="留空=车道宽度"
+            controls-position="right"
+          />
+          <el-button
+            size="small"
+            link
+            @click="stopLineWidth = undefined"
+          >
+            重置
+          </el-button>
+        </div>
+        <el-button
+          size="small"
+          type="primary"
+          class="stopline-gen-btn"
+          :loading="generatingStopLine"
+          :disabled="!stopLineLaneletId || !drawingManager"
+          @click="generateStopLineCoords"
+        >
+          生成停止线
+        </el-button>
+        <div class="stopline-tip">
+          生成后会自动进入绘制模式并填入坐标,点击"完成"保存到后端
+        </div>
+      </el-collapse-item>
+    </el-collapse>
+
     <!-- 当前绘制状态 -->
     <div class="status-box">
       <span>状态:</span>
@@ -244,7 +310,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, inject, watch, onBeforeUnmount, type Ref } from 'vue'
+import { ref, computed, inject, watch, onMounted, onBeforeUnmount, type Ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   DrawingManager,
@@ -253,7 +319,12 @@ import {
   LINESTRING_SUBTYPE_OPTIONS as SUBTYPE_OPTIONS,
   lineSubtypeLabel,
 } from '../utils/DrawingManager'
-import { updateLinestring, deleteLinestring } from '../api'
+import {
+  updateLinestring,
+  deleteLinestring,
+  generateStopLine as generateStopLineApi,
+  listLanelets,
+} from '../api'
 
 // 从 MapView 注入 internalId → backendId 映射,用于统一显示后端 ID
 const lineIdMap = inject<Map<number, number>>('lineIdMap', new Map())
@@ -265,6 +336,7 @@ const TYPE_OPTIONS = [
   { value: 'curbstone', label: '路沿' },
   { value: 'virtual', label: '虚拟线' },
   { value: 'road_border', label: '道路边界' },
+  { value: 'stop_line', label: '停止线' },
 ] as const
 
 interface LineEntry {
@@ -295,6 +367,80 @@ const pointCount = ref(0)
 const lines = ref<LineEntry[]>([])
 
 const subtypeOptions = computed(() => SUBTYPE_OPTIONS[selectedType.value] ?? [])
+
+// ============================================================
+//  停止线生成(根据车道方向自动生成垂直停止线坐标)
+// ============================================================
+interface LaneletOption {
+  id: number
+}
+
+const stopLineLaneletId = ref<number | null>(null)
+const stopLineOffset = ref(0)
+const stopLineWidth = ref<number | undefined>(undefined)
+const generatingStopLine = ref(false)
+const availableLanelets = ref<LaneletOption[]>([])
+
+/** 加载所有 Lanelet,作为关联车道下拉选项 */
+async function loadAvailableLanelets() {
+  try {
+    const items = await listLanelets()
+    availableLanelets.value = (items || []).map((ll: any) => ({ id: ll.id }))
+  } catch (e: any) {
+    console.warn('[LineStringPanel] 加载 Lanelet 列表失败:', e)
+    availableLanelets.value = []
+  }
+}
+
+/**
+ * 调用后端生成与车道垂直的停止线坐标,
+ * 并通过 DrawingManager.setPendingLineCoords 写入当前绘制中的线段。
+ */
+async function generateStopLineCoords() {
+  if (!stopLineLaneletId.value) {
+    ElMessage.warning('请先选择关联车道')
+    return
+  }
+  const dm = drawingManager.value
+  if (!dm) {
+    ElMessage.warning('Potree 未就绪,无法生成停止线')
+    return
+  }
+
+  // 若类型不是 stop_line(用户可能刚切换),自动同步
+  if (selectedType.value !== 'stop_line') {
+    selectedType.value = 'stop_line'
+    const opts = SUBTYPE_OPTIONS['stop_line'] ?? []
+    if (!opts.find(o => o.value === selectedSubtype.value)) {
+      selectedSubtype.value = opts.length ? opts[0].value : ''
+    }
+  }
+
+  // 若未进入绘制模式,先进入
+  if (!isDrawingMode.value) {
+    dm.startDrawing(selectedType.value, selectedSubtype.value)
+  }
+
+  generatingStopLine.value = true
+  try {
+    const coords = await generateStopLineApi(
+      stopLineLaneletId.value,
+      stopLineOffset.value,
+      stopLineWidth.value,
+    )
+    if (!coords || coords.length < 6) {
+      ElMessage.error('生成的停止线坐标无效')
+      return
+    }
+    // 将生成的坐标写入当前绘制中的线段(会自动清除已有锚点)
+    dm.setPendingLineCoords(coords)
+    ElMessage.success('已生成停止线坐标,可在 3D 视图中查看,点击"完成"保存')
+  } catch (e: any) {
+    ElMessage.error('生成停止线失败: ' + (e?.message || ''))
+  } finally {
+    generatingStopLine.value = false
+  }
+}
 
 // ============================================================
 //  批量操作状态
@@ -585,6 +731,18 @@ onBeforeUnmount(() => {
   drawingManager.value?.stopDrawing()
   exitBatchMode()
 })
+
+onMounted(() => {
+  // 加载可用 Lanelet 列表供停止线生成使用
+  loadAvailableLanelets()
+})
+
+// 当用户切换到 stop_line 类型时,若 Lanelet 列表为空则懒加载一次
+watch(selectedType, (t) => {
+  if (t === 'stop_line' && availableLanelets.value.length === 0) {
+    loadAvailableLanelets()
+  }
+})
 </script>
 
 <style scoped>
@@ -632,6 +790,46 @@ onBeforeUnmount(() => {
   width: 36px;
   text-align: right;
   flex-shrink: 0;
+}
+
+/* 停止线生成折叠面板 */
+.stopline-collapse {
+  margin: 8px 0;
+  border: 1px solid #e4e7ed;
+  border-radius: 4px;
+  background: #fafafa;
+}
+
+.stopline-collapse :deep(.el-collapse-item__header) {
+  padding: 0 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #303133;
+  background: transparent;
+}
+
+.stopline-collapse :deep(.el-collapse-item__content) {
+  padding: 8px;
+}
+
+.stopline-collapse .form-row {
+  margin-bottom: 8px;
+}
+
+.stopline-collapse .form-row .el-input-number {
+  flex: 1;
+}
+
+.stopline-gen-btn {
+  width: 100%;
+  margin-top: 4px;
+}
+
+.stopline-tip {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #909399;
+  line-height: 1.5;
 }
 
 .status-box {

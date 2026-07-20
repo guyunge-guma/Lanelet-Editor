@@ -1152,6 +1152,150 @@ class Lanelet2Service:
             return False
         return self._stop_lines.pop(sl_id, None) is not None
 
+    def generate_stop_line_coords(
+        self,
+        lanelet_id: int,
+        offset: float = 0.0,
+        width: float | None = None,
+    ) -> list[float]:
+        """根据 Lanelet 方向生成与车道垂直的停止线坐标
+
+        参数:
+        - lanelet_id: 关联的车道 ID
+        - offset: 沿车道方向的偏移量(米),正值向车道终点方向,负值向起点方向
+        - width: 停止线宽度(米),None 则自动取车道宽度
+
+        返回: [x1, y1, z1, x2, y2, z2] 两个端点的坐标
+
+        原理:
+        1. 取车道左边界起点+偏移量得到中心点
+        2. 计算车道方向向量
+        3. 垂直方向 = 方向向量旋转90度
+        4. 中心点 ± 垂直方向 * (width/2) 得到两端点
+        """
+        if not LANELET2_AVAILABLE:
+            raise RuntimeError("lanelet2 库未安装")
+
+        try:
+            ll = self.map.laneletLayer[lanelet_id]
+        except (KeyError, IndexError, RuntimeError) as e:
+            raise ValueError(f"Lanelet {lanelet_id} 不存在") from e
+
+        left_bound = list(ll.leftBound)
+        right_bound = list(ll.rightBound)
+
+        if len(left_bound) < 2 or len(right_bound) < 2:
+            raise ValueError("Lanelet 边界点数不足")
+
+        # 计算左边界总长度(用于 offset 插值)
+        left_total_len = 0.0
+        for i in range(len(left_bound) - 1):
+            p1 = left_bound[i]
+            p2 = left_bound[i + 1]
+            left_total_len += ((p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2) ** 0.5
+
+        # 计算右边界总长度(用于 offset 插值)
+        right_total_len = 0.0
+        for i in range(len(right_bound) - 1):
+            p1 = right_bound[i]
+            p2 = right_bound[i + 1]
+            right_total_len += ((p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2) ** 0.5
+
+        # 根据 offset 沿左/右边界插值找到对应位置的点
+        # offset <= 0: 取起点; offset > 0: 按弧长比例插值
+        if offset <= 0:
+            center_left = left_bound[0]
+            center_right = right_bound[0]
+        else:
+            center_left = self._interpolate_on_bound(left_bound, offset, left_total_len)
+            center_right = self._interpolate_on_bound(right_bound, offset, right_total_len)
+
+        # 车道方向向量(左边界在 offset 处的切线)
+        # 简化:使用左边界起点到第二个点的方向
+        dx = left_bound[1].x - left_bound[0].x
+        dy = left_bound[1].y - left_bound[0].y
+        length = (dx * dx + dy * dy) ** 0.5
+        if length < 1e-6:
+            # 起点和第二个点重合,尝试用最后一个点
+            dx = left_bound[-1].x - left_bound[0].x
+            dy = left_bound[-1].y - left_bound[0].y
+            length = (dx * dx + dy * dy) ** 0.5
+        if length < 1e-6:
+            raise ValueError("无法计算车道方向(左边界退化)")
+        dx /= length
+        dy /= length
+
+        # 垂直方向(旋转90度): (-dy, dx)
+        perp_x = -dy
+        perp_y = dx
+
+        # 确定停止线宽度
+        if width is None:
+            # 自动取车道宽度(左右边界距离)
+            w = ((center_right.x - center_left.x) ** 2
+                 + (center_right.y - center_left.y) ** 2) ** 0.5
+            width = w if w > 0.1 else 3.0  # 默认 3m
+
+        half_w = width / 2
+
+        # 中心点(左右边界中点)
+        cx = (center_left.x + center_right.x) / 2
+        cy = (center_left.y + center_right.y) / 2
+        cz = (center_left.z + center_right.z) / 2
+
+        # 两端点 = 中心 ± 垂直方向 * half_w
+        x1 = cx + perp_x * half_w
+        y1 = cy + perp_y * half_w
+        z1 = cz
+        x2 = cx - perp_x * half_w
+        y2 = cy - perp_y * half_w
+        z2 = cz
+
+        return [x1, y1, z1, x2, y2, z2]
+
+    @staticmethod
+    def _interpolate_on_bound(bound_pts: list, offset: float, total_len: float):
+        """沿边界按弧长 offset 插值,返回该处的 Point3d-like 对象
+
+        bound_pts: 边界点列表(每个元素有 x/y/z 属性)
+        offset: 沿边界起点的弧长偏移(米)
+        total_len: 边界总长度(米)
+        """
+        # 边界退化或 offset 超出总长,返回起点/终点
+        if total_len <= 0 or len(bound_pts) < 2:
+            return bound_pts[0]
+        if offset >= total_len:
+            return bound_pts[-1]
+        if offset <= 0:
+            return bound_pts[0]
+
+        # 沿各段累加弧长,找到 offset 所在的段
+        accumulated = 0.0
+        for i in range(len(bound_pts) - 1):
+            p1 = bound_pts[i]
+            p2 = bound_pts[i + 1]
+            seg_len = ((p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2) ** 0.5
+            if seg_len < 1e-9:
+                continue
+            if accumulated + seg_len >= offset:
+                # 在本段内插值
+                t = (offset - accumulated) / seg_len
+                # 构造一个简单的命名空间对象作为插值点(避免依赖 Point3d)
+                class _InterpPt:
+                    __slots__ = ('x', 'y', 'z')
+                    def __init__(self, x, y, z):
+                        self.x = x
+                        self.y = y
+                        self.z = z
+                return _InterpPt(
+                    p1.x + (p2.x - p1.x) * t,
+                    p1.y + (p2.y - p1.y) * t,
+                    p1.z + (p2.z - p1.z) * t,
+                )
+            accumulated += seg_len
+        # 兜底:返回终点
+        return bound_pts[-1]
+
     # ---------- JSON 持久化 ----------
 
     def save_to_file(self, path: str | Path) -> str:

@@ -26,6 +26,7 @@ export const TYPE_COLORS: Record<string, number> = {
   curbstone: 0xff6600, // 橙色
   virtual: 0x999999, // 灰色
   road_border: 0xff0000, // 红色
+  stop_line: 0xffffff, // 白色(停止线)
 }
 
 /** LineString 类型中文标签(给面板图例用) */
@@ -35,6 +36,7 @@ export const TYPE_LABELS: Record<string, string> = {
   curbstone: '路沿',
   virtual: '虚拟线',
   road_border: '道路边界',
+  stop_line: '停止线',
 }
 
 /** LineString 各类型对应的子类型选项(供两个面板共用,确保标签一致) */
@@ -55,6 +57,10 @@ export const LINESTRING_SUBTYPE_OPTIONS: Record<string, { value: string; label: 
   ],
   virtual: [],
   road_border: [
+    { value: 'solid', label: '实线' },
+    { value: 'dashed', label: '虚线' },
+  ],
+  stop_line: [
     { value: 'solid', label: '实线' },
     { value: 'dashed', label: '虚线' },
   ],
@@ -584,6 +590,39 @@ export class DrawingManager {
   cancelDrawing(): void {
     if (!this.isDrawing) return
     this.clearCurrentDrawing()
+    this.onPointAdded?.(this.getFlatCoords())
+  }
+
+  /**
+   * 直接设置当前正在绘制的线段的坐标(用于停止线生成等场景)
+   * - 会清除当前已绘制的点,用新坐标替换
+   * - 仅在绘制模式下有效;若未进入绘制模式,会自动进入(使用当前类型/子类型)
+   * - 不触发碰撞检测,但会通过 onPointAdded 通知 UI 更新点数
+   * @param coords 扁平坐标数组 [x0,y0,z0, x1,y1,z1, ...]
+   */
+  setPendingLineCoords(coords: number[]): void {
+    if (!this.THREE) return
+    // 若未进入绘制模式,先进入(使用当前类型/子类型)
+    if (!this.isDrawing) {
+      this.startDrawing(this.currentType || 'line_thin', this.currentSubtype || 'solid')
+    }
+
+    // 清除当前已绘制的锚点(复用 clearCurrentDrawing 的逻辑,但保留预览线)
+    for (const mesh of this.anchorMeshes) {
+      this.safeRemoveFromScene(mesh)
+    }
+    this.anchorMeshes = []
+    this.points = []
+
+    // 解析坐标并直接添加点(跳过碰撞检测和吸附)
+    const pts = this.parseCoords(coords)
+    for (const p of pts) {
+      this.addPointDirect(p)
+    }
+
+    // 更新预览线
+    this.updatePreview()
+    // 通知 UI 更新点数
     this.onPointAdded?.(this.getFlatCoords())
   }
 
@@ -2216,6 +2255,25 @@ export class DrawingManager {
 
     // 放置锚点后隐藏吸附指示器
     this.hideSnapIndicator()
+  }
+
+  /**
+   * 直接添加一个锚点(用于停止线生成等程序化输入场景)
+   * - 不触发碰撞检测
+   * - 不触发吸附
+   * - 不在此处触发 onPointAdded 回调(由调用方统一触发,避免批量添加时频繁通知)
+   */
+  private addPointDirect(point: { x: number; y: number; z: number }): void {
+    if (!this.THREE) return
+    this.points.push(new this.THREE.Vector3(point.x, point.y, point.z))
+    // 锚点资源在 startDrawing 时创建;若未创建则跳过 mesh(仅记录点位)
+    if (this.anchorGeometry && this.anchorMaterial) {
+      const mesh = new this.THREE.Mesh(this.anchorGeometry, this.anchorMaterial)
+      mesh.position.set(point.x, point.y, point.z)
+      mesh.renderOrder = 1000
+      this.threeScene.add(mesh)
+      this.anchorMeshes.push(mesh)
+    }
   }
 
   /** 更新预览线(锚点 + 当前鼠标位置) */

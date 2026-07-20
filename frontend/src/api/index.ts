@@ -621,5 +621,25 @@ export async function deleteStopLine(id: number) {
   return data
 }
 
+/**
+ * 根据车道方向生成与车道垂直的停止线坐标
+ * @param laneletId 关联的车道 ID
+ * @param offset 沿车道方向的偏移量(米),正值向车道终点方向
+ * @param width 停止线宽度(米),留空则自动取车道宽度
+ * @returns [x1, y1, z1, x2, y2, z2] 两个端点的坐标
+ */
+export async function generateStopLine(
+  laneletId: number,
+  offset: number = 0,
+  width?: number,
+): Promise<number[]> {
+  const { data } = await http.post(`/lanelets/${laneletId}/generate_stop_line`, {
+    lanelet_id: laneletId,
+    offset,
+    width,
+  })
+  return data.coords
+}
+
 // 注:导出/导入/校验/原点 API 见本文件上方已定义的
 // exportOsm / importOsm / exportDownloadUrl / validateTopology / validateGeometry / getOrigin / setOrigin
