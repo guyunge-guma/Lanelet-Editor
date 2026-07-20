@@ -5,6 +5,36 @@ const http = axios.create({
   timeout: 30000,
 })
 
+// 统一错误处理:提取后端 detail,简化组件层代码
+http.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    let message = '网络异常,请检查后端服务'
+    if (error.response) {
+      const status = error.response.status
+      const detail = error.response.data?.detail || error.response.data?.message
+      if (detail) {
+        message = detail
+      } else if (status === 404) {
+        message = '请求的资源不存在(404)'
+      } else if (status === 413) {
+        message = '文件过大(413)'
+      } else if (status === 415) {
+        message = '不支持的格式(415)'
+      } else if (status >= 500) {
+        message = `后端服务错误(${status})`
+      } else if (status === 401 || status === 403) {
+        message = '权限不足'
+      }
+    } else if (error.code === 'ECONNABORTED') {
+      message = '请求超时,请重试或检查网络'
+    } else if (!window.navigator.onLine) {
+      message = '网络已断开,请检查网络连接'
+    }
+    return Promise.reject(new Error(message))
+  }
+)
+
 export interface HealthInfo {
   status: string
   lanelet2_available: boolean
@@ -76,7 +106,7 @@ export async function getConvertStatus(name: string): Promise<ConvertStatus> {
 
 // 手动触发转换(无需重新上传)
 export async function convertPointcloud(name: string): Promise<{ task_id: string; name: string; message: string }> {
-  const { data } = await http.post(`/pointclouds/${name}/convert`)
+  const { data } = await http.post(`/pointclouds/${name}/convert`, undefined, { timeout: 120000 })
   return data
 }
 
@@ -267,13 +297,13 @@ export async function loadMap(path?: string) {
 
 /** 保存当前所有标注到默认地图文件(新 API,含 RE) */
 export async function saveMapAll(): Promise<{ path: string; linestring_count: number; lanelet_count: number; message: string }> {
-  const { data } = await http.post('/map/save')
+  const { data } = await http.post('/map/save', undefined, { timeout: 120000 })
   return data
 }
 
 /** 从默认地图文件加载所有标注(新 API,含 RE) */
 export async function loadMapAll(): Promise<{ path: string; linestring_count: number; lanelet_count: number }> {
-  const { data } = await http.post('/map/load')
+  const { data } = await http.post('/map/load', undefined, { timeout: 120000 })
   return data
 }
 
@@ -310,19 +340,27 @@ export interface ImportStats {
  * path 为空时后端默认输出到 data/exports/map_<timestamp>.osm
  */
 export async function exportOsm(path?: string): Promise<ExportResult> {
-  const { data } = await http.post('/export', { path })
+  const { data } = await http.post('/export', { path }, { timeout: 120000 })
   return data
 }
 
 /** 导入 .osm 文件(会清空当前地图后重建) */
 export async function importOsm(path: string): Promise<ImportStats> {
-  const { data } = await http.post('/import', { path })
+  const { data } = await http.post('/import', { path }, { timeout: 120000 })
   return data
 }
 
 /** 构造导出文件下载 URL(配合 exportOsm 返回的 filename 使用) */
 export function exportDownloadUrl(filename: string): string {
   return `/api/export/download/${filename}`
+}
+
+/** 触发浏览器下载(创建临时 <a> 标签并点击) */
+export function triggerDownload(url: string, filename?: string): void {
+  const a = document.createElement('a')
+  a.href = url
+  if (filename) a.download = filename
+  a.click()
 }
 
 // ---------------- 校验: 拓扑 / 几何 ----------------

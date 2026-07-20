@@ -37,6 +37,9 @@
         />
       </el-select>
     </div>
+    <div v-if="!lanelets.length" class="empty-hint">
+      暂无 Lanelet,请先在"元素"标签下创建
+    </div>
 
     <!-- 预设属性(按类型) -->
     <template v-if="presetAttrs.length">
@@ -383,11 +386,19 @@ async function handleDelete(re: RegulatoryElement): Promise<void> {
 
   try {
     await deleteRegulatoryElement(re.id)
-  } catch (e) {
+  } catch (e: any) {
     console.warn('[RegulatoryPanel] 后端删除 RE 失败:', e)
-    ElMessage.warning('后端删除失败,仅从前端移除')
+    ElMessage.warning(`后端删除失败: ${e?.response?.data?.detail || e?.message || ''}。已仅从前端移除`)
+    if (selectedId.value === re.id) {
+      clearHighlight()
+      selectedId.value = null
+    }
+    elements.value = elements.value.filter(e => e.id !== re.id)
+    emit('regulatory-deleted', re.id)
+    return // 提前退出,不弹 success
   }
 
+  // 后端删除成功才弹 success
   if (selectedId.value === re.id) {
     clearHighlight()
     selectedId.value = null
@@ -506,6 +517,12 @@ onBeforeUnmount(() => {
 .form-row .el-select,
 .form-row .el-input {
   flex: 1;
+}
+
+.empty-hint {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  margin-top: 4px;
 }
 
 .attr-row {

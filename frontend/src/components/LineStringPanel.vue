@@ -448,6 +448,7 @@ async function batchDelete() {
     )
 
     const successCount = results.filter(r => r.status === 'fulfilled').length
+    const failCount = results.filter(r => r.status === 'rejected').length
 
     // 更新前端:移除已删除的线段
     for (const internalId of ids) {
@@ -458,7 +459,11 @@ async function batchDelete() {
       emit('line-deleted', internalId)
     }
 
-    ElMessage.success(`已删除 ${successCount} 条线段`)
+    if (failCount > 0) {
+      ElMessage.warning(`已删除 ${successCount} 条,${failCount} 条后端删除失败`)
+    } else {
+      ElMessage.success(`已删除 ${successCount} 条线段`)
+    }
     selectedLines.value = new Set()
 
     // 如果列表已空,自动退出批量模式
@@ -524,7 +529,16 @@ function handleCancel() {
   ElMessage.info('已取消当前线段')
 }
 
-function handleDelete(l: LineEntry) {
+async function handleDelete(l: LineEntry) {
+  try {
+    await ElMessageBox.confirm(
+      `确认删除线段 #${lineIdMap.get(l.id) ?? l.id}?`,
+      '删除确认',
+      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return  // 用户取消
+  }
   drawingManager.value?.removeFinishedLine(l.id)
   lines.value = lines.value.filter(x => x.id !== l.id)
   emit('line-deleted', l.id)

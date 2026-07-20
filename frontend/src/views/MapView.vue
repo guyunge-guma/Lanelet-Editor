@@ -19,22 +19,14 @@
           </el-button>
         </el-tooltip>
         <el-divider direction="vertical" />
-        <el-tooltip content="隐藏/显示点云,仅看标注" placement="bottom">
-          <el-button
-            size="small"
-            :type="annotationOnlyMode ? 'primary' : 'default'"
-            @click="toggleAnnotationOnly"
-          >
-            {{ annotationOnlyMode ? '☰ 仅看标注' : '☰ 显示全部' }}
+        <el-tooltip content="隐藏点云,仅显示标注元素" placement="bottom">
+          <el-button size="small" :type="annotationOnlyMode ? 'primary' : 'default'" @click="toggleAnnotationOnly">
+            <el-icon><View v-if="!annotationOnlyMode" /><Hide v-else /></el-icon>
           </el-button>
         </el-tooltip>
-        <el-tooltip content="标注始终显示在点云上层(穿透显示)" placement="bottom">
-          <el-button
-            size="small"
-            :type="annotationOnTop ? 'primary' : 'default'"
-            @click="toggleAnnotationOnTop"
-          >
-            {{ annotationOnTop ? '↑ 标注置顶' : '↑ 正常深度' }}
+        <el-tooltip content="标注穿透点云显示(置顶)" placement="bottom">
+          <el-button size="small" :type="annotationOnTop ? 'primary' : 'default'" @click="toggleAnnotationOnTop">
+            <el-icon><Top /></el-icon>
           </el-button>
         </el-tooltip>
         <el-divider direction="vertical" />
@@ -141,9 +133,10 @@
             </div>
             <div v-if="topoResult && topoResult.length" class="issue-list">
               <div
-                v-for="(issue, idx) in topoResult"
-                :key="'topo-' + idx"
-                class="issue-item"
+                v-for="issue in topoResult"
+                :key="issue.lanelet_id + issue.type"
+                class="issue-item clickable"
+                @click="focusOnIssue(issue)"
               >
                 <el-tag size="small" :type="issueTagType(issue.type)">{{ issueTypeLabel(issue.type) }}</el-tag>
                 <span class="issue-msg">{{ issue.message }}</span>
@@ -209,8 +202,8 @@
 
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref, shallowRef, reactive, computed, provide, watch, type Ref, markRaw } from 'vue'
-import { ElMessage } from 'element-plus'
-import { Files } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Files, View, Hide, Top } from '@element-plus/icons-vue'
 import FileManager from '../components/FileManager.vue'
 import LineStringPanel from '../components/LineStringPanel.vue'
 import LaneletPanel from '../components/LaneletPanel.vue'
@@ -222,6 +215,8 @@ import {
   createLinestring,
   deleteLinestring,
   exportOsm,
+  exportDownloadUrl,
+  triggerDownload,
   saveMapAll,
   loadMapAll,
   getMapInfo,
@@ -397,9 +392,11 @@ function initPotree() {
           }
         } catch (e) {
           console.warn('[MapView] 自动加载地图失败:', e)
+          ElMessage.warning('自动恢复地图失败,可点击"加载地图"手动恢复')
         }
       }).catch((e) => {
         console.warn('[MapView] 获取地图信息失败:', e)
+        ElMessage.warning('自动恢复地图失败,可点击"加载地图"手动恢复')
       })
     }
     initDrawing()
@@ -414,17 +411,15 @@ function initPotree() {
 
 /** 撤销 */
 function handleUndo(): void {
-  const ok = drawingManagerRef.value?.undo() ?? false
-  if (!ok) ElMessage.info('无可撤销操作')
+  drawingManagerRef.value?.undo()
 }
 
 /** 重做 */
 function handleRedo(): void {
-  const ok = drawingManagerRef.value?.redo() ?? false
-  if (!ok) ElMessage.info('无可重做操作')
+  drawingManagerRef.value?.redo()
 }
 
-/** 全局键盘快捷键: Ctrl+Z 撤销, Ctrl+Y / Ctrl+Shift+Z 重做(非绘制模式) */
+/** 全局键盘快捷键: Ctrl+Z 撤销, Ctrl+Y / Ctrl+Shift+Z 重做, Ctrl+S 保存(非绘制模式) */
 function handleGlobalKeyDown(e: KeyboardEvent): void {
   // 绘制模式下不拦截(由 DrawingManager 内部处理)
   if (drawingManagerRef.value?.getIsDrawing()) return
@@ -435,6 +430,9 @@ function handleGlobalKeyDown(e: KeyboardEvent): void {
     } else if (e.key === 'y' || (e.key === 'z' && e.shiftKey)) {
       e.preventDefault()
       handleRedo()
+    } else if (e.key === 's') {
+      e.preventDefault()
+      handleSaveMap()
     }
   }
 }
@@ -539,8 +537,8 @@ async function refreshPointclouds() {
   loading.value = true
   try {
     pointclouds.value = await listPointclouds()
-  } catch (e) {
-    ElMessage.error('刷新失败')
+  } catch (e: any) {
+    ElMessage.error('刷新点云列表失败: ' + (e?.response?.data?.detail || e?.message || '网络异常'))
   } finally {
     loading.value = false
   }
@@ -571,18 +569,16 @@ async function onLineFinished(coords: number[], type: string, subtype: string, i
 }
 
 /** 线段删除:同步删除后端数据 */
-async function onLineDeleted(internalId: number) {
+function onLineDeleted(internalId: number) {
   const backendId = lineIdMap.get(internalId)
   lineIdMap.delete(internalId)
   if (backendId === undefined) return
   // 从 LaneletPanel 可用边界列表中移除
   linestringsForLanelet.value = linestringsForLanelet.value.filter(l => l.id !== backendId)
-  try {
-    await deleteLinestring(backendId)
-  } catch (e) {
-    // 后端可能暂不支持删除接口,前端已删除,忽略
+  deleteLinestring(backendId).catch((e) => {
     console.warn('[Lanelet Editor] 后端删除线段失败:', e)
-  }
+    ElMessage.warning(`线段 #${backendId} 后端删除失败,刷新后可能重现`)
+  })
 }
 
 /** 线段类型更新(批量改类型):同步 linestringsForLanelet 中的类型信息 */
@@ -643,7 +639,11 @@ async function runTopologyValidation(): Promise<void> {
   try {
     const res = await validateTopology()
     topoResult.value = res
-    ElMessage.success(`拓扑校验完成: ${res.length} 个问题`)
+    if (res.length === 0) {
+      ElMessage.success('拓扑校验通过,未发现问题')
+    } else {
+      ElMessage.warning(`拓扑校验发现 ${res.length} 个问题`)
+    }
   } catch (e: any) {
     console.error('[Lanelet Editor] 拓扑校验失败:', e)
     ElMessage.error('拓扑校验失败: ' + (e?.response?.data?.detail || e?.message || ''))
@@ -658,7 +658,11 @@ async function runGeometryValidation(): Promise<void> {
   try {
     const res = await validateGeometry()
     geoResult.value = res
-    ElMessage.success(`几何校验完成: ${res.length} 个问题`)
+    if (res.length === 0) {
+      ElMessage.success('几何校验通过,未发现问题')
+    } else {
+      ElMessage.warning(`几何校验发现 ${res.length} 个问题`)
+    }
   } catch (e: any) {
     console.error('[Lanelet Editor] 几何校验失败:', e)
     ElMessage.error('几何校验失败: ' + (e?.response?.data?.detail || e?.message || ''))
@@ -698,14 +702,30 @@ function issueTypeLabel(type: string): string {
   }
 }
 
+/** 点击 issue 定位到对应 Lanelet:高亮 3 秒后自动取消 */
+function focusOnIssue(issue: any) {
+  if (issue.lanelet_id && drawingManagerRef.value) {
+    drawingManagerRef.value.highlightLanelet(issue.lanelet_id, true)
+    // 3 秒后自动取消高亮
+    setTimeout(() => {
+      drawingManagerRef.value?.highlightLanelet(issue.lanelet_id, false)
+    }, 3000)
+  }
+}
+
 /** 导出 OSM */
 async function handleExportOsm() {
   exporting.value = true
   try {
     const res = await exportOsm()
-    ElMessage.success(`已导出: ${res?.path ?? ''}`)
+    ElMessage.success('已导出 OSM 文件')
+    // 触发浏览器下载
+    if (res?.filename) {
+      const url = exportDownloadUrl(res.filename)
+      triggerDownload(url, res.filename)
+    }
   } catch (e: any) {
-    ElMessage.error('导出失败: ' + (e?.response?.data?.detail || e?.message || ''))
+    ElMessage.error('导出失败: ' + (e?.message || '未知错误'))
   } finally {
     exporting.value = false
   }
@@ -726,6 +746,15 @@ async function handleSaveMap() {
 
 /** 加载地图(从 JSON 恢复所有标注) */
 async function handleLoadMap() {
+  try {
+    await ElMessageBox.confirm(
+      '加载将覆盖当前所有标注,未保存的内容将丢失。是否继续?',
+      '加载地图确认',
+      { confirmButtonText: '加载', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return  // 用户取消
+  }
   loadingMap.value = true
   try {
     const res = await loadMapAll()
@@ -949,6 +978,14 @@ onBeforeUnmount(() => {
   padding: 4px 0;
   border-bottom: 1px solid #f0f0f0;
   font-size: 12px;
+}
+
+.issue-item.clickable {
+  cursor: pointer;
+}
+
+.issue-item.clickable:hover {
+  background: var(--el-color-primary-light-9);
 }
 
 .issue-msg {

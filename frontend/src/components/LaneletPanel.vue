@@ -409,7 +409,10 @@ async function handleCreate(): Promise<void> {
       }
     }
 
-    const res = await createLanelet(leftId, rightId, { subtype: newSubtype.value })
+    const res = await createLanelet(leftId, rightId, {
+      subtype: newSubtype.value,
+      direction: newDirection.value,
+    })
     const id: number = res?.id
     if (id === undefined || id === null) {
       ElMessage.warning('创建 Lanelet 成功,但未返回 id')
@@ -496,12 +499,20 @@ async function handleDelete(entry: LaneletEntry): Promise<void> {
 
   try {
     await deleteLanelet(entry.id)
-  } catch (e) {
+  } catch (e: any) {
     // 后端可能不支持删除,前端仍清理
     console.warn('[LaneletPanel] 后端删除 Lanelet 失败:', e)
-    ElMessage.warning('后端删除失败,仅从前端移除')
+    ElMessage.warning(`后端删除失败: ${e?.response?.data?.detail || e?.message || ''}。已仅从前端移除`)
+    drawingManager.value?.removeLaneletMesh(entry.id)
+    lanelets.value = lanelets.value.filter(l => l.id !== entry.id)
+    if (selectedLaneletId.value === entry.id) {
+      clearSelection()
+    }
+    emit('lanelet-deleted', entry.id)
+    return // 提前退出,不弹 success
   }
 
+  // 后端删除成功才弹 success
   drawingManager.value?.removeLaneletMesh(entry.id)
   lanelets.value = lanelets.value.filter(l => l.id !== entry.id)
   if (selectedLaneletId.value === entry.id) {
