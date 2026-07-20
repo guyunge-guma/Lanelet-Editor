@@ -88,6 +88,9 @@ export const REGULATORY_TYPE_COLORS: Record<string, number> = {
   stop_line: 0xffffff, // 白色
   crosswalk: 0xffcc00, // 黄色斑马线
   traffic_sign: 0x2196f3, // 蓝色
+  parking: 0x8b00ff, // 紫色(停车区)
+  pedestrian: 0x00ffff, // 青色(人行道)
+  priority: 0xff00ff, // 品红(优先车道)
 }
 
 /** Regulatory Element 类型中文标签 */
@@ -96,6 +99,9 @@ export const REGULATORY_TYPE_LABELS: Record<string, string> = {
   stop_line: '停止线',
   crosswalk: '斑马线',
   traffic_sign: '交通标志',
+  parking: '停车区',
+  pedestrian: '人行道',
+  priority: '优先车道',
 }
 
 /** 红绿灯默认颜色选项 */

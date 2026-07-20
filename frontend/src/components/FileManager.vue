@@ -92,6 +92,71 @@
       </div>
       <el-empty v-if="!files.length && !loading" description="暂无点云,点击上方上传" :image-size="60" />
     </div>
+
+    <!-- 地图配置(原点 + 投影类型) -->
+    <el-collapse v-model="configActive" class="map-config-collapse">
+      <el-collapse-item title="地图配置" name="map">
+        <div class="form-row">
+          <label>投影类型</label>
+          <el-select
+            v-model="projectorType"
+            size="small"
+            :disabled="configSaving"
+            @change="onProjectorChange"
+          >
+            <el-option label="UTM" value="utm" />
+            <el-option
+              label="MGRS"
+              value="mgrs"
+              :disabled="!mgrsAvailable"
+            />
+          </el-select>
+          <span v-if="!mgrsAvailable" class="hint-warn">MGRS 需 lanelet2 支持</span>
+        </div>
+        <div class="form-row">
+          <label>原点纬度</label>
+          <el-input-number
+            v-model="originLat"
+            :precision="6"
+            :step="0.0001"
+            size="small"
+            :disabled="configSaving"
+          />
+        </div>
+        <div class="form-row">
+          <label>原点经度</label>
+          <el-input-number
+            v-model="originLon"
+            :precision="6"
+            :step="0.0001"
+            size="small"
+            :disabled="configSaving"
+          />
+        </div>
+        <div class="form-row">
+          <label>原点高程</label>
+          <el-input-number
+            v-model="originAlt"
+            :precision="2"
+            :step="0.1"
+            size="small"
+            :disabled="configSaving"
+          />
+        </div>
+        <el-button
+          size="small"
+          type="primary"
+          :loading="configSaving"
+          class="save-btn"
+          @click="saveOriginConfig"
+        >
+          保存配置
+        </el-button>
+        <div class="config-hint">
+          切换投影类型后,已有几何数据的坐标投影会发生变化,建议重新加载地图。
+        </div>
+      </el-collapse-item>
+    </el-collapse>
   </div>
 </template>
 
@@ -107,8 +172,11 @@ import {
   renamePointcloud,
   downloadUrl,
   subscribeProgress,
+  getOrigin,
+  setOriginConfig,
   type FileItem,
   type ConvertStatus,
+  type ProjectorType,
 } from '../api'
 
 const emit = defineEmits<{
@@ -118,6 +186,17 @@ const emit = defineEmits<{
 const files = ref<FileItem[]>([])
 const loading = ref(false)
 const uploading = ref(false)
+
+// 地图配置(原点 + 投影类型)
+const configActive = ref<string[]>([])
+const projectorType = ref<ProjectorType | string>('utm')
+const mgrsAvailable = ref(false)
+const originLat = ref(0)
+const originLon = ref(0)
+const originAlt = ref(0)
+const configSaving = ref(false)
+// 标记是否有未保存的投影类型变更(用于提示重新加载地图)
+let projectorChanged = false
 
 // 转换状态
 const converting = ref(false)
@@ -169,6 +248,75 @@ async function refresh() {
     ElMessage.error('刷新失败')
   } finally {
     loading.value = false
+  }
+}
+
+async function loadOriginConfig() {
+  try {
+    const cfg = await getOrigin()
+    originLat.value = cfg.lat
+    originLon.value = cfg.lon
+    originAlt.value = cfg.alt
+    projectorType.value = cfg.projector_type
+    mgrsAvailable.value = cfg.mgrs_available
+    projectorChanged = false
+  } catch (e: any) {
+    // 静默失败,避免在面板未展开时报错刷屏
+    console.warn('加载投影配置失败:', e?.message || e)
+  }
+}
+
+function onProjectorChange(val: ProjectorType | string) {
+  if (val === 'mgrs' && !mgrsAvailable.value) {
+    ElMessage.warning('当前 lanelet2 版本不支持 MGRS 投影,已回退到 UTM')
+    projectorType.value = 'utm'
+    return
+  }
+  projectorChanged = true
+}
+
+async function saveOriginConfig() {
+  if (projectorType.value === 'mgrs' && !mgrsAvailable.value) {
+    ElMessage.warning('当前 lanelet2 版本不支持 MGRS 投影')
+    projectorType.value = 'utm'
+    return
+  }
+  // 切换投影类型会改变已有几何数据与投影的对应关系,需要二次确认
+  if (projectorChanged) {
+    try {
+      await ElMessageBox.confirm(
+        '切换投影类型后,已有几何数据的坐标投影会发生变化,建议在切换后重新加载地图。是否继续?',
+        '投影类型切换确认',
+        { type: 'warning', confirmButtonText: '继续切换', cancelButtonText: '取消' },
+      )
+    } catch {
+      // 用户取消,恢复原值
+      projectorType.value = 'utm'
+      projectorChanged = false
+      return
+    }
+  }
+  configSaving.value = true
+  try {
+    const cfg = await setOriginConfig({
+      lat: originLat.value,
+      lon: originLon.value,
+      alt: originAlt.value,
+      projector_type: projectorType.value,
+    })
+    originLat.value = cfg.lat
+    originLon.value = cfg.lon
+    originAlt.value = cfg.alt
+    projectorType.value = cfg.projector_type
+    mgrsAvailable.value = cfg.mgrs_available
+    projectorChanged = false
+    ElMessage.success(`投影配置已保存(类型: ${cfg.projector_type.toUpperCase()})`)
+  } catch (e: any) {
+    ElMessage.error('保存投影配置失败: ' + (e?.message || ''))
+    // 后端可能因 MGRS 不可用回退到 utm,刷新一次以同步状态
+    await loadOriginConfig()
+  } finally {
+    configSaving.value = false
   }
 }
 
@@ -325,6 +473,7 @@ async function handleDelete(f: FileItem) {
 
 onMounted(() => {
   refresh()
+  loadOriginConfig()
 })
 
 onBeforeUnmount(() => {
@@ -438,5 +587,54 @@ onBeforeUnmount(() => {
 
 .more-btn:hover {
   color: #409eff;
+}
+
+/* ---- 地图配置折叠面板 ---- */
+.map-config-collapse {
+  margin-top: 12px;
+  border-top: 1px solid #ebeef5;
+}
+
+.map-config-collapse :deep(.el-collapse-item__header) {
+  font-size: 13px;
+  font-weight: 500;
+  padding-left: 4px;
+}
+
+.form-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.form-row label {
+  width: 64px;
+  flex-shrink: 0;
+  color: #606266;
+}
+
+.form-row .el-select,
+.form-row .el-input-number {
+  flex: 1;
+  min-width: 0;
+}
+
+.hint-warn {
+  font-size: 11px;
+  color: #e6a23c;
+}
+
+.save-btn {
+  width: 100%;
+  margin-top: 4px;
+}
+
+.config-hint {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #909399;
+  line-height: 1.5;
 }
 </style>

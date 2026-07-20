@@ -20,6 +20,18 @@ except ImportError:
     # 首次部署时 lanelet2 可能未装好,允许以降级模式启动
     LANELET2_AVAILABLE = False
 
+# MGRSProjector 仅在部分 lanelet2 版本中可用,单独做守卫导入
+if LANELET2_AVAILABLE:
+    try:
+        from lanelet2.projection import MGRSProjector  # type: ignore
+        MGRS_AVAILABLE = True
+    except ImportError:
+        MGRSProjector = None  # type: ignore
+        MGRS_AVAILABLE = False
+else:
+    MGRSProjector = None  # type: ignore
+    MGRS_AVAILABLE = False
+
 # GPSPoint / BasicPoint3d 在不同 lanelet2 版本中位置不同,防御性导入
 if LANELET2_AVAILABLE:
     try:
@@ -57,10 +69,18 @@ class Lanelet2Service:
         self.origin_lat = origin_lat if origin_lat is not None else settings.origin_lat
         self.origin_lon = origin_lon if origin_lon is not None else settings.origin_lon
         self.origin_alt = origin_alt if origin_alt is not None else settings.origin_alt
+        # 投影器类型: 'utm' 或 'mgrs',来自配置,可在运行时切换
+        self.projector_type = settings.projector_type.lower()
+        if self.projector_type not in ("utm", "mgrs"):
+            print(f"[Lanelet2Service] 未知的 projector_type={self.projector_type},回退到 utm")
+            self.projector_type = "utm"
+        if self.projector_type == "mgrs" and not MGRS_AVAILABLE:
+            print("[Lanelet2Service] MGRS projector 不可用,回退到 UTM")
+            self.projector_type = "utm"
         # lanelet2 未安装时降级为 None,避免 NameError
         self.origin = self._make_origin(self.origin_lat, self.origin_lon, self.origin_alt)
         # 局部坐标 -> WGS84 投影器
-        self.projector = UtmProjector(self.origin) if LANELET2_AVAILABLE else None
+        self.projector = self._build_projector() if LANELET2_AVAILABLE else None
         self.map = LaneletMap() if LANELET2_AVAILABLE else None
 
         # 第 5 轮: 红绿灯 / 停止线 / RegulatoryElement 的逻辑存储
@@ -82,6 +102,25 @@ class Lanelet2Service:
         except TypeError:
             # 旧版本 Origin 仅接受 (lat, lon)
             return Origin(lat, lon)
+
+    def _build_projector(self):
+        """根据 self.projector_type 构造投影器实例
+
+        - utm: 使用 UtmProjector(始终可用)
+        - mgrs: 使用 MGRSProjector(仅当 lanelet2 版本支持时可用,否则回退到 UTM)
+        """
+        if self.projector_type == "mgrs" and MGRS_AVAILABLE and MGRSProjector is not None:
+            return MGRSProjector(self.origin)
+        # 默认 / 回退使用 UTM
+        return UtmProjector(self.origin)
+
+    def get_projector_type(self) -> str:
+        """获取当前投影器类型('utm' 或 'mgrs')"""
+        return self.projector_type
+
+    def is_mgrs_available(self) -> bool:
+        """查询当前 lanelet2 版本是否支持 MGRSProjector(供前端禁用选项)"""
+        return MGRS_AVAILABLE
 
     # ---------- 基础元素创建 ----------
 
@@ -186,19 +225,35 @@ class Lanelet2Service:
 
     # ---------- 坐标系对齐(原点 / 局部坐标 <-> GPS) ----------
 
-    def set_origin(self, lat: float, lon: float, alt: float = 0.0) -> dict[str, float]:
-        """设置投影原点(WGS84 经纬度 + 高程)
+    def set_origin(self, lat: float, lon: float, alt: float = 0.0,
+                   projector_type: str | None = None) -> dict[str, float]:
+        """设置投影原点(WGS84 经纬度 + 高程),可选切换 projector 类型
 
         注意: 修改原点不会对已有 map 中的局部坐标做反向平移,已有几何数据仍停留在
         旧原点对应的局部坐标系中。建议在导入/新建地图前先设置好原点。
+
+        若同时切换 projector_type,由于坐标投影发生变化,已有几何数据会与新投影
+        不匹配,建议切换后重新加载地图。
         """
         if not LANELET2_AVAILABLE:
             raise RuntimeError("lanelet2 库未安装")
         self.origin_lat = float(lat)
         self.origin_lon = float(lon)
         self.origin_alt = float(alt)
+
+        # 可选切换 projector 类型
+        if projector_type is not None:
+            new_type = projector_type.lower()
+            if new_type not in ("utm", "mgrs"):
+                print(f"[Lanelet2Service] 未知的 projector_type={new_type},忽略")
+            elif new_type == "mgrs" and not MGRS_AVAILABLE:
+                print("[Lanelet2Service] MGRS projector 不可用,回退到 UTM")
+                self.projector_type = "utm"
+            else:
+                self.projector_type = new_type
+
         self.origin = self._make_origin(self.origin_lat, self.origin_lon, self.origin_alt)
-        self.projector = UtmProjector(self.origin)
+        self.projector = self._build_projector()
         return self.get_origin()
 
     def get_origin(self) -> dict[str, float]:
@@ -570,6 +625,119 @@ class Lanelet2Service:
             })
         return result
 
+    # ---------- 拓扑关系自动建议 ----------
+
+    def suggest_topology(self, max_distance: float = 5.0) -> list[dict[str, Any]]:
+        """根据空间距离自动建议 Lanelet 之间的前驱/后继关系
+
+        规则:
+        1. Lanelet A 的终点(左边界最后一点)与 Lanelet B 的起点(左边界第一点)距离 < max_distance
+        2. A 和 B 方向一致(都为 forward 或都为 backward)
+        3. A 和 B 当前没有拓扑关系
+
+        返回: [{from_id, to_id, distance, relation: 'successor'|'predecessor'}]
+        """
+        if not LANELET2_AVAILABLE:
+            return []
+
+        suggestions: list[dict[str, Any]] = []
+        ll_list = list(self.map.laneletLayer)
+
+        # 收集所有 Lanelet 的起止点和方向
+        ll_info: dict[int, dict] = {}
+        for ll in ll_list:
+            try:
+                left_bound = list(ll.leftBound)
+                start_pt = left_bound[0]
+                end_pt = left_bound[-1]
+                attrs = dict(ll.attributes)
+                direction = attrs.get('direction', 'forward')
+                ll_info[ll.id] = {
+                    'start': (float(start_pt.x), float(start_pt.y), float(start_pt.z)),
+                    'end': (float(end_pt.x), float(end_pt.y), float(end_pt.z)),
+                    'direction': direction,
+                    'predecessor': self._parse_id_list(attrs.get('predecessor', '')),
+                    'successor': self._parse_id_list(attrs.get('successor', '')),
+                }
+            except (IndexError, RuntimeError):
+                continue
+
+        # 两两比较
+        for a_id, a_info in ll_info.items():
+            for b_id, b_info in ll_info.items():
+                if a_id == b_id:
+                    continue
+                # A 的终点 → B 的起点 = A 的后继是 B
+                a_end = a_info['end']
+                b_start = b_info['start']
+                dist = ((a_end[0] - b_start[0]) ** 2 +
+                        (a_end[1] - b_start[1]) ** 2 +
+                        (a_end[2] - b_start[2]) ** 2) ** 0.5
+
+                if dist < max_distance:
+                    # 检查是否已有拓扑关系
+                    if b_id in a_info['successor']:
+                        continue
+                    # 检查方向是否一致
+                    if a_info['direction'] != b_info['direction']:
+                        continue
+                    suggestions.append({
+                        'from_id': a_id,
+                        'to_id': b_id,
+                        'distance': round(dist, 3),
+                        'relation': 'successor',
+                        'message': f'车道 {a_id} 的终点距离车道 {b_id} 的起点 {dist:.2f}m,建议设为后继'
+                    })
+
+        return suggestions
+
+    def apply_topology_suggestions(self, suggestions: list[dict]) -> dict[str, Any]:
+        """批量应用拓扑建议
+
+        suggestions: [{from_id, to_id, relation: 'successor'|'predecessor'}]
+        """
+        if not LANELET2_AVAILABLE:
+            return {"applied": 0, "failed": 0}
+
+        applied = 0
+        failed = 0
+
+        for sug in suggestions:
+            try:
+                from_id = sug['from_id']
+                to_id = sug['to_id']
+                relation = sug.get('relation', 'successor')
+
+                # 找到 from Lanelet
+                from_ll = None
+                for ll in self.map.laneletLayer:
+                    if ll.id == from_id:
+                        from_ll = ll
+                        break
+
+                if from_ll is None:
+                    failed += 1
+                    continue
+
+                attrs = dict(from_ll.attributes)
+                if relation == 'successor':
+                    existing = self._parse_id_list(attrs.get('successor', ''))
+                    if to_id not in existing:
+                        existing.append(to_id)
+                        from_ll.attributes['successor'] = ','.join(map(str, existing))
+                else:  # predecessor
+                    existing = self._parse_id_list(attrs.get('predecessor', ''))
+                    if to_id not in existing:
+                        existing.append(to_id)
+                        from_ll.attributes['predecessor'] = ','.join(map(str, existing))
+
+                applied += 1
+            except Exception as e:
+                print(f"[suggest_topology] apply failed: {e}")
+                failed += 1
+
+        return {"applied": applied, "failed": failed}
+
     @staticmethod
     def _parse_id_list(raw: str) -> list[int]:
         """将逗号分隔的 ID 字符串解析为 int 列表"""
@@ -651,7 +819,10 @@ class Lanelet2Service:
     #   - 创建时尽力调用 RegulatoryElementFactory 在 lanelet2 map 中生成原生对象,
     #     以便 OSM 导出与 Autoware 对接;失败则静默跳过,不影响逻辑存储。
 
-    _RE_TYPES: set[str] = {"traffic_light", "stop_line", "crosswalk", "traffic_sign"}
+    _RE_TYPES: set[str] = {
+        "traffic_light", "stop_line", "crosswalk", "traffic_sign",
+        "parking", "pedestrian", "priority",
+    }
 
     def add_regulatory_element(
         self,
@@ -662,6 +833,7 @@ class Lanelet2Service:
         """创建 RegulatoryElement
 
         rl_type: 'traffic_light' | 'stop_line' | 'crosswalk' | 'traffic_sign'
+                 | 'parking' | 'pedestrian' | 'priority'
         lanelet_ids: 关联的 Lanelet ID 列表(不存在的会被自动过滤)
         attrs: 属性字典
         返回新创建的 RegulatoryElement ID。

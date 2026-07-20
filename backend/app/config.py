@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     # 原点高程(米),局部坐标系的 z=0 对应的椭球高
     origin_alt: float = 0.0
 
+    # 投影器类型: 'utm' 或 'mgrs'
+    projector_type: str = "utm"
+
     # 跨域允许
     cors_origins: list[str] = ["*"]
 

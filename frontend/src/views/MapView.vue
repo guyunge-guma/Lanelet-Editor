@@ -108,6 +108,7 @@
             <RegulatoryPanel
               @regulatory-created="onRegulatoryCreated"
               @regulatory-deleted="onRegulatoryDeleted"
+              @regulatory-updated="onRegulatoryUpdated"
             />
           </div>
         </el-tab-pane>
@@ -629,6 +630,11 @@ function onRegulatoryCreated(id: number) {
 
 function onRegulatoryDeleted(id: number) {
   console.log('[Lanelet Editor] RegulatoryElement 已删除:', id)
+}
+
+function onRegulatoryUpdated(id: number) {
+  // RE 更新后刷新相关可视化(如果需要)
+  console.log('[Lanelet Editor] RegulatoryElement 已更新:', id)
 }
 
 // ---------------- 校验 ----------------

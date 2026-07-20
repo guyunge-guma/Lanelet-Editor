@@ -126,15 +126,59 @@
       </el-collapse-item>
     </el-collapse>
 
-    <!-- 选中 RE 的详情 -->
+    <!-- 选中 RE 的详情 / 编辑 -->
     <template v-if="selectedElement">
       <el-divider />
-      <div class="section-title">详情 (#{{ selectedElement.id }})</div>
-      <div class="detail-row"><span>类型:</span><span>{{ typeLabel(selectedElement.type) }}</span></div>
-      <div class="detail-row"><span>关联车道:</span><span>{{ selectedElement.lanelet_ids.map(i => '#' + i).join(', ') || '无' }}</span></div>
-      <div class="detail-row" v-for="(v, k) in selectedElement.attrs" :key="k">
-        <span>{{ k }}:</span><span>{{ v }}</span>
+      <div class="section-title">
+        详情 (#{{ selectedElement.id }})
+        <el-button v-if="!editing" size="small" link type="primary" @click="startEdit">编辑</el-button>
+        <template v-else>
+          <el-button size="small" type="primary" @click="saveEdit" :loading="editSaving">保存</el-button>
+          <el-button size="small" @click="cancelEdit">取消</el-button>
+        </template>
       </div>
+
+      <!-- 非编辑模式: 展示 -->
+      <template v-if="!editing">
+        <div class="detail-row"><span>类型:</span><span>{{ typeLabel(selectedElement.type) }}</span></div>
+        <div class="detail-row"><span>关联车道:</span><span>{{ selectedElement.lanelet_ids.map(i => '#' + i).join(', ') || '无' }}</span></div>
+        <div class="detail-row" v-for="(v, k) in selectedElement.attrs" :key="k">
+          <span>{{ k }}:</span><span>{{ v }}</span>
+        </div>
+      </template>
+
+      <!-- 编辑模式: 表单 -->
+      <template v-else>
+        <div class="form-row">
+          <label>类型</label>
+          <el-select v-model="editForm.type" size="small" @change="onEditTypeChange">
+            <el-option v-for="t in TYPE_OPTIONS" :key="t.value" :label="t.label" :value="t.value" />
+          </el-select>
+        </div>
+        <div class="form-row">
+          <label>关联车道</label>
+          <el-select v-model="editForm.laneletIds" size="small" multiple filterable collapse-tags>
+            <el-option v-for="ll in lanelets" :key="ll.id" :label="`#${ll.id}`" :value="ll.id" />
+          </el-select>
+        </div>
+        <!-- 预设属性 -->
+        <div class="form-row" v-for="attr in editPresetAttrs" :key="attr.key">
+          <label>{{ attr.label }}</label>
+          <el-select v-if="attr.options" v-model="editForm.attrs[attr.key]" size="small">
+            <el-option v-for="o in attr.options" :key="o.value" :label="o.label" :value="o.value" />
+          </el-select>
+          <el-input v-else v-model="editForm.attrs[attr.key]" size="small" :placeholder="attr.placeholder" />
+        </div>
+        <!-- 自定义属性编辑 -->
+        <div class="section-subtitle">自定义属性</div>
+        <div class="form-row" v-for="(item, idx) in editCustomAttrs" :key="item.id">
+          <label>自定义{{ idx + 1 }}</label>
+          <el-input v-model="item.key" size="small" placeholder="属性名" style="width: 80px" />
+          <el-input v-model="item.value" size="small" placeholder="属性值" style="flex: 1" />
+          <el-button size="small" link type="danger" @click="editCustomAttrs.splice(idx, 1)">删除</el-button>
+        </div>
+        <el-button size="small" link type="primary" @click="editCustomAttrs.push({ id: Date.now() + editCustomAttrs.length, key: '', value: '' })">+ 添加属性</el-button>
+      </template>
     </template>
 
     <el-divider />
@@ -160,6 +204,7 @@ import {
 } from '../utils/DrawingManager'
 import {
   createRegulatoryElement,
+  updateRegulatoryElement,
   listRegulatoryElements,
   deleteRegulatoryElement,
   listLanelets,
@@ -172,6 +217,9 @@ const TYPE_OPTIONS = [
   { value: 'stop_line', label: '停止线' },
   { value: 'crosswalk', label: '斑马线' },
   { value: 'traffic_sign', label: '交通标志' },
+  { value: 'parking', label: '停车区' },
+  { value: 'pedestrian', label: '人行道' },
+  { value: 'priority', label: '优先车道' },
 ] as const
 
 /** 预设属性定义(按类型) */
@@ -208,6 +256,28 @@ const PRESET_ATTRS: Record<string, PresetAttr[]> = {
   ],
   stop_line: [],
   crosswalk: [],
+  parking: [
+    {
+      key: 'parking_type',
+      label: '停车类型',
+      options: [
+        { value: 'parallel', label: '平行停车' },
+        { value: 'perpendicular', label: '垂直停车' },
+        { value: 'diagonal', label: '斜向停车' },
+      ],
+    },
+  ],
+  pedestrian: [],
+  priority: [
+    {
+      key: 'priority_type',
+      label: '优先类型',
+      options: [
+        { value: 'right_of_way', label: '优先通行' },
+        { value: 'yield', label: '让行' },
+      ],
+    },
+  ],
 }
 
 interface LaneletOption {
@@ -222,6 +292,7 @@ interface CustomAttr {
 const emit = defineEmits<{
   (e: 'regulatory-created', id: number): void
   (e: 'regulatory-deleted', id: number): void
+  (e: 'regulatory-updated', id: number): void
 }>()
 
 const drawingManagerRef = inject<Ref<DrawingManager | null>>('drawingManager', ref(null))
@@ -239,7 +310,10 @@ const elements = ref<RegulatoryElement[]>([])
 const lanelets = ref<LaneletOption[]>([])
 const loadingList = ref(false)
 const selectedId = ref<number | null>(null)
-const activeGroups = ref<string[]>(['traffic_light', 'stop_line', 'crosswalk', 'traffic_sign'])
+const activeGroups = ref<string[]>([
+  'traffic_light', 'stop_line', 'crosswalk', 'traffic_sign',
+  'parking', 'pedestrian', 'priority',
+])
 
 const presetAttrs = computed(() => PRESET_ATTRS[newType.value] ?? [])
 
@@ -248,6 +322,94 @@ const canCreate = computed(() => newType.value !== '' && newLaneletIds.value.len
 const selectedElement = computed(() =>
   elements.value.find(e => e.id === selectedId.value) ?? null,
 )
+
+// ---------------- 编辑 ----------------
+
+interface EditCustomAttr {
+  id: number
+  key: string
+  value: string
+}
+
+const editing = ref(false)
+const editSaving = ref(false)
+const editForm = ref({
+  type: '',
+  laneletIds: [] as number[],
+  attrs: {} as Record<string, string>,
+})
+const editCustomAttrs = ref<EditCustomAttr[]>([])
+const editPresetAttrs = computed(() => PRESET_ATTRS[editForm.value.type] ?? [])
+
+/** 进入编辑模式:把当前选中元素的数据拷贝到表单 */
+function startEdit(): void {
+  if (!selectedElement.value) return
+  editing.value = true
+  editForm.value = {
+    type: selectedElement.value.type,
+    laneletIds: [...selectedElement.value.lanelet_ids],
+    attrs: { ...selectedElement.value.attrs },
+  }
+  // 提取自定义属性(非预设 key,且排除内置 type 字段)
+  const presetKeys = new Set((PRESET_ATTRS[editForm.value.type] ?? []).map(a => a.key))
+  presetKeys.add('type')
+  editCustomAttrs.value = Object.entries(selectedElement.value.attrs)
+    .filter(([k]) => !presetKeys.has(k))
+    .map(([k, v], i) => ({ id: Date.now() + i, key: k, value: v }))
+}
+
+/** 取消编辑 */
+function cancelEdit(): void {
+  editing.value = false
+}
+
+/** 编辑模式切换类型:仅重置预设属性为默认值,不清空自定义属性 */
+function onEditTypeChange(): void {
+  const presets = PRESET_ATTRS[editForm.value.type] ?? []
+  for (const p of presets) {
+    if (p.options && p.options.length > 0) {
+      editForm.value.attrs[p.key] = p.options[0].value
+    }
+  }
+}
+
+/** 保存编辑:合并预设 + 自定义属性后调用后端更新接口 */
+async function saveEdit(): Promise<void> {
+  if (!selectedElement.value) return
+  editSaving.value = true
+  try {
+    // 合并预设 + 自定义属性
+    const finalAttrs: Record<string, string> = { ...editForm.value.attrs }
+    for (const c of editCustomAttrs.value) {
+      if (c.key.trim()) {
+        finalAttrs[c.key.trim()] = c.value
+      }
+    }
+
+    await updateRegulatoryElement(selectedElement.value.id, {
+      type: editForm.value.type,
+      lanelet_ids: editForm.value.laneletIds,
+      attrs: finalAttrs,
+    })
+
+    // 更新前端状态
+    const el = elements.value.find(e => e.id === selectedElement.value!.id)
+    if (el) {
+      el.type = editForm.value.type
+      el.lanelet_ids = [...editForm.value.laneletIds]
+      el.attrs = finalAttrs
+    }
+
+    editing.value = false
+    ElMessage.success('已更新 Regulatory Element')
+    emit('regulatory-updated', selectedElement.value.id)
+  } catch (e: any) {
+    console.error('[RegulatoryPanel] 更新 RE 失败:', e)
+    ElMessage.error('更新失败: ' + (e?.message || '未知错误'))
+  } finally {
+    editSaving.value = false
+  }
+}
 
 /** 类型变化时重置预设属性 */
 function onTypeChange(type: string): void {
@@ -482,6 +644,9 @@ onBeforeUnmount(() => {
 }
 
 .section-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   font-size: 12px;
   font-weight: 600;
   color: #303133;

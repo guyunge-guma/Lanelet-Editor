@@ -244,6 +244,31 @@ export async function getAllLaneletRelations(): Promise<LaneletRelations[]> {
   return data.items
 }
 
+// ---------------- 拓扑关系自动建议 ----------------
+
+/** 拓扑连接建议项 */
+export interface TopologySuggestion {
+  from_id: number
+  to_id: number
+  distance: number
+  relation: string
+  message: string
+}
+
+/** 自动建议 Lanelet 之间的前驱/后继关系 */
+export async function suggestTopology(maxDistance: number = 5.0): Promise<TopologySuggestion[]> {
+  const { data } = await http.get('/lanelets/suggest_topology', { params: { max_distance: maxDistance } })
+  return data.suggestions
+}
+
+/** 批量应用拓扑建议 */
+export async function applyTopologySuggestions(
+  suggestions: TopologySuggestion[],
+): Promise<{ applied: number; failed: number }> {
+  const { data } = await http.post('/lanelets/apply_suggestions', { suggestions })
+  return data
+}
+
 // ---------------- LineString 扩展 CRUD ----------------
 
 /** LineString 完整数据(含坐标与属性) */
@@ -391,21 +416,51 @@ export async function validateGeometry(): Promise<GeometryIssue[]> {
 
 // ---------------- 坐标系原点配置 ----------------
 
+/** 投影器类型字面量 */
+export type ProjectorType = 'utm' | 'mgrs'
+
 export interface OriginConfig {
   lat: number
   lon: number
   alt: number
+  /** 当前投影器类型:'utm' 或 'mgrs' */
+  projector_type: ProjectorType | string
+  /** 当前 lanelet2 版本是否支持 MGRS 投影(不支持时前端应禁用 mgrs 选项) */
+  mgrs_available: boolean
 }
 
-/** 获取当前投影原点 */
+/** 获取当前投影原点与投影器类型 */
 export async function getOrigin(): Promise<OriginConfig> {
   const { data } = await http.get('/config/origin')
   return data
 }
 
-/** 设置投影原点(WGS84 经纬度 + 高程) */
-export async function setOrigin(lat: number, lon: number, alt = 0): Promise<OriginConfig> {
-  const { data } = await http.put('/config/origin', { lat, lon, alt })
+/** 获取当前投影原点与投影器类型(语义别名) */
+export async function getOriginConfig(): Promise<OriginConfig> {
+  return getOrigin()
+}
+
+/** 设置投影原点(WGS84 经纬度 + 高程),可选切换 projector 类型 */
+export async function setOrigin(
+  lat: number,
+  lon: number,
+  alt = 0,
+  projectorType?: ProjectorType | string,
+): Promise<OriginConfig> {
+  const payload: Record<string, unknown> = { lat, lon, alt }
+  if (projectorType !== undefined) payload.projector_type = projectorType
+  const { data } = await http.put('/config/origin', payload)
+  return data
+}
+
+/** 设置投影配置(部分字段,未提供的字段保持不变) */
+export async function setOriginConfig(config: Partial<OriginConfig>): Promise<OriginConfig> {
+  const payload: Record<string, unknown> = {}
+  if (config.lat !== undefined) payload.lat = config.lat
+  if (config.lon !== undefined) payload.lon = config.lon
+  if (config.alt !== undefined) payload.alt = config.alt
+  if (config.projector_type !== undefined) payload.projector_type = config.projector_type
+  const { data } = await http.put('/config/origin', payload)
   return data
 }
 
@@ -419,11 +474,14 @@ export type RegulatoryElementType =
   | 'stop_line'
   | 'crosswalk'
   | 'traffic_sign'
+  | 'parking'
+  | 'pedestrian'
+  | 'priority'
 
 /** Regulatory Element 数据结构 */
 export interface RegulatoryElement {
   id: number
-  /** 元素类型:traffic_light / stop_line / crosswalk / traffic_sign */
+  /** 元素类型:traffic_light / stop_line / crosswalk / traffic_sign / parking / pedestrian / priority */
   type: RegulatoryElementType | string
   /** 关联的 Lanelet id 列表 */
   lanelet_ids: number[]

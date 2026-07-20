@@ -77,6 +77,7 @@
       <span>Lanelet 列表 ({{ lanelets.length }})</span>
       <div class="list-actions">
         <el-button size="small" link @click="loadLanelets" :loading="loadingList">刷新</el-button>
+        <el-button size="small" link @click="suggestTopologyConnections">自动连接</el-button>
         <el-button v-if="lanelets.length" size="small" link type="danger" @click="handleClearAll">
           清空全部
         </el-button>
@@ -176,6 +177,34 @@
         <span>{{ s.label }} ({{ s.value }})</span>
       </div>
     </div>
+
+    <!-- 拓扑连接建议对话框 -->
+    <el-dialog v-model="showSuggestions" title="拓扑连接建议" width="500px">
+      <div v-if="suggestions.length === 0" class="empty-hint">
+        未发现需要连接的 Lanelet,所有车道可能已正确连接
+      </div>
+      <el-checkbox-group v-else v-model="selectedSuggestions">
+        <div v-for="(sug, idx) in suggestions" :key="idx" class="suggestion-item">
+          <el-checkbox :label="idx">
+            <span class="sug-text">{{ sug.message }}</span>
+          </el-checkbox>
+        </div>
+      </el-checkbox-group>
+      <template #footer>
+        <el-button @click="showSuggestions = false">取消</el-button>
+        <el-button
+          type="primary"
+          @click="applySelectedSuggestions"
+          :loading="applying"
+          :disabled="selectedSuggestions.length === 0"
+        >
+          应用选中 ({{ selectedSuggestions.length }})
+        </el-button>
+        <el-button type="success" @click="applyAllSuggestions" :loading="applying">
+          应用全部
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -198,6 +227,9 @@ import {
   setLaneletRelations,
   getLaneletRelations,
   getLinestring,
+  suggestTopology,
+  applyTopologySuggestions,
+  type TopologySuggestion,
 } from '../api'
 
 /** Lanelet 子类型选项 */
@@ -263,6 +295,12 @@ const selectedLaneletId = ref<number | null>(null)
 const editSubtype = ref<string>('road')
 const editPredecessor = ref<number[]>([])
 const editSuccessor = ref<number[]>([])
+
+// 拓扑连接建议
+const showSuggestions = ref(false)
+const suggestions = ref<TopologySuggestion[]>([])
+const selectedSuggestions = ref<number[]>([])
+const applying = ref(false)
 
 const canCreate = computed(
   () =>
@@ -590,6 +628,52 @@ async function handleRelationsChange(): Promise<void> {
   }
 }
 
+// ---------------- 拓扑自动连接 ----------------
+
+async function suggestTopologyConnections(): Promise<void> {
+  try {
+    suggestions.value = await suggestTopology()
+    // 默认全选
+    selectedSuggestions.value = suggestions.value.map((_, i) => i)
+    showSuggestions.value = true
+  } catch (e: any) {
+    console.warn('[LaneletPanel] 获取拓扑建议失败:', e)
+    ElMessage.error('获取建议失败: ' + (e?.message || ''))
+  }
+}
+
+async function applySelectedSuggestions(): Promise<void> {
+  applying.value = true
+  try {
+    const toApply = selectedSuggestions.value.map(i => suggestions.value[i])
+    const res = await applyTopologySuggestions(toApply)
+    ElMessage.success(`已应用 ${res.applied} 个连接${res.failed ? `,失败 ${res.failed} 个` : ''}`)
+    showSuggestions.value = false
+    // 刷新列表
+    await loadLanelets()
+    // 若仍有选中 Lanelet,同步其拓扑关系
+    if (selectedLaneletId.value !== null) {
+      try {
+        const rel = await getLaneletRelations(selectedLaneletId.value)
+        editPredecessor.value = rel.predecessor ?? []
+        editSuccessor.value = rel.successor ?? []
+      } catch {
+        // 忽略
+      }
+    }
+  } catch (e: any) {
+    console.warn('[LaneletPanel] 应用拓扑建议失败:', e)
+    ElMessage.error('应用失败: ' + (e?.message || ''))
+  } finally {
+    applying.value = false
+  }
+}
+
+async function applyAllSuggestions(): Promise<void> {
+  selectedSuggestions.value = suggestions.value.map((_, i) => i)
+  await applySelectedSuggestions()
+}
+
 // ---------------- 工具函数 ----------------
 
 /** 0xRRGGBB -> css 颜色字符串 */
@@ -774,5 +858,26 @@ onBeforeUnmount(() => {
   gap: 8px;
   padding: 3px 0;
   color: #606266;
+}
+
+.suggestion-item {
+  padding: 8px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.suggestion-item:last-child {
+  border-bottom: none;
+}
+
+.sug-text {
+  margin-left: 8px;
+  font-size: 13px;
+  color: #303133;
+}
+
+.empty-hint {
+  text-align: center;
+  padding: 20px;
+  color: var(--el-text-color-secondary);
 }
 </style>

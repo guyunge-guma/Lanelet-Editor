@@ -555,6 +555,14 @@ class LaneletRelationsReq(BaseModel):
     successor: list[int] | None = None
 
 
+class TopologySuggestionReq(BaseModel):
+    max_distance: float = 5.0
+
+
+class ApplySuggestionsReq(BaseModel):
+    suggestions: list[dict]
+
+
 class MapFileReq(BaseModel):
     path: str | None = None        # 为 None 时使用 settings.map_file 默认路径
 
@@ -728,6 +736,31 @@ def list_lanelets_geometry() -> dict[str, Any]:
     return {"items": ll_service.list_lanelets_with_geometry()}
 
 
+@app.get("/api/lanelets/suggest_topology")
+def suggest_topology(req: TopologySuggestionReq | None = None) -> dict[str, Any]:
+    """自动建议 Lanelet 拓扑关系"""
+    max_dist = req.max_distance if req else 5.0
+    try:
+        suggestions = ll_service.suggest_topology(max_dist)
+        return {"suggestions": suggestions, "count": len(suggestions)}
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/lanelets/apply_suggestions")
+def apply_topology_suggestions(req: ApplySuggestionsReq) -> dict[str, Any]:
+    """批量应用拓扑建议"""
+    try:
+        result = ll_service.apply_topology_suggestions(req.suggestions)
+        return result
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
 @app.get("/api/lanelets/{ll_id}")
 def get_lanelet(ll_id: int) -> dict[str, Any]:
     """获取单个 Lanelet(含左右边界坐标)"""
@@ -810,6 +843,8 @@ def map_health() -> dict[str, Any]:
         "linestring_count": len(linestrings),
         "lanelet_count": len(lanelets),
         "origin": ll_service.get_origin(),
+        "projector_type": ll_service.get_projector_type(),
+        "mgrs_available": ll_service.is_mgrs_available(),
         "map_file": str(settings.map_file),
         "map_exists": os.path.exists(str(settings.map_file)),
     }
@@ -966,16 +1001,25 @@ class OriginReq(BaseModel):
     lat: float
     lon: float
     alt: float = 0.0
+    # 投影器类型: 'utm' 或 'mgrs',可选。为 None 时保持当前类型不变
+    projector_type: str | None = None
 
 
 @app.put("/api/config/origin")
 def set_origin(req: OriginReq) -> dict[str, Any]:
-    """设置投影原点(WGS84 经纬度 + 高程)
+    """设置投影原点(WGS84 经纬度 + 高程),可选切换 projector 类型
 
-    body: { lat, lon, alt }
+    body: { lat, lon, alt, projector_type? }
+    - projector_type 为 'utm' 或 'mgrs',省略时保持当前类型不变
+    - 切换 projector 类型会重建投影器,已有几何数据建议重新加载
     """
     try:
-        return ll_service.set_origin(req.lat, req.lon, req.alt)
+        ll_service.set_origin(req.lat, req.lon, req.alt, req.projector_type)
+        return {
+            **ll_service.get_origin(),
+            "projector_type": ll_service.get_projector_type(),
+            "mgrs_available": ll_service.is_mgrs_available(),
+        }
     except RuntimeError as e:
         raise HTTPException(503, str(e))
     except Exception as e:
@@ -984,8 +1028,12 @@ def set_origin(req: OriginReq) -> dict[str, Any]:
 
 @app.get("/api/config/origin")
 def get_origin() -> dict[str, Any]:
-    """获取当前投影原点 {lat, lon, alt}"""
-    return ll_service.get_origin()
+    """获取当前投影原点 {lat, lon, alt} 与投影器类型"""
+    return {
+        **ll_service.get_origin(),
+        "projector_type": ll_service.get_projector_type(),
+        "mgrs_available": ll_service.is_mgrs_available(),
+    }
 
 
 # ---------------- 第 5 轮: RegulatoryElement / TrafficLight / StopLine ----------------
