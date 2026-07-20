@@ -829,7 +829,6 @@ export class DrawingManager {
     const arrows: any[] = []
     const arrowColor = color
     const boundLen = this.estimateBoundLength(leftPts)
-    const arrowSize = Math.min(3, Math.max(1.5, boundLen / 10))
 
     // 沿左右边界中线采样箭头位置
     const minLen = Math.min(leftPts.length, rightPts.length)
@@ -841,6 +840,12 @@ export class DrawingManager {
       const midX = (lp.x + rp.x) / 2
       const midY = (lp.y + rp.y) / 2
       const midZ = (lp.z + rp.z) / 2
+
+      // 当前采样点处的 Lanelet 宽度(左右边界距离)
+      const widthVec = new THREE.Vector3(rp.x - lp.x, rp.y - lp.y, rp.z - lp.z)
+      const laneWidth = widthVec.length()
+      // 箭头大小不超过宽度的一半,且在 [0.5, 3] 范围内
+      const arrowSize = Math.min(3, Math.max(0.5, Math.min(laneWidth / 2, boundLen / 10)))
 
       // 方向:沿左边界切线(当前点→下一个点)
       const nextIdx = Math.min(i + 1, leftPts.length - 1)
@@ -870,13 +875,21 @@ export class DrawingManager {
 
     // 如果没有采样到箭头(边界太短),在中心放一个
     if (arrows.length === 0) {
+      // 计算平均宽度用于 fallback 箭头大小
+      let avgWidth = 3
+      if (leftPts.length > 0 && rightPts.length > 0) {
+        const lp = leftPts[0]
+        const rp = rightPts[0]
+        avgWidth = Math.sqrt((rp.x - lp.x) ** 2 + (rp.y - lp.y) ** 2 + (rp.z - lp.z) ** 2)
+      }
+      const fallbackSize = Math.min(3, Math.max(0.5, Math.min(avgWidth / 2, boundLen / 10)))
       const arrow = new THREE.ArrowHelper(
         dirVec,
         center,
-        arrowSize,
+        fallbackSize,
         arrowColor,
-        arrowSize * 0.4,
-        arrowSize * 0.3,
+        fallbackSize * 0.4,
+        fallbackSize * 0.3,
       )
       arrow.renderOrder = 999
       arrow.line?.material && (arrow.line.material.depthTest = false)
